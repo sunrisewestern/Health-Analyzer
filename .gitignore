@@ -1,0 +1,22 @@
+.gradle/
+build/
+local.properties
+.idea/
+*.iml
+.DS_Store
+.kotlin/
+captures/
+
+# Release artifacts and signing keys – never commit these
+dist/
+*.apk
+*.aab
+*.jks
+*.keystore
+
+# Local tool state
+.omc/
+.claude/settings.local.json
+
+# Samsung Health Data SDK – download it yourself from developer.samsung.com (see README)
+app/libs/*.aar

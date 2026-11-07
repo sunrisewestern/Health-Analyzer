@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Cloud AI endpoints use HTTPS. Plain HTTP is allowed so a self-hosted model on your
+     LAN (Ollama, LM Studio, vLLM at http://192.168.x.x:port) can be used. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

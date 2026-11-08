@@ -77,6 +77,15 @@ HEALTHANALYZER_KEY_PASSWORD=…
 
 Without these properties the release APK is built unsigned. Raise `versionCode` in `app/build.gradle.kts` for every build you hand out.
 
+### GitHub Actions CI/CD
+
+A release workflow (`.github/workflows/release.yml`) builds, signs, and attaches APKs to GitHub Releases on tag pushes (`v*`) or manual triggers (`workflow_dispatch`).
+
+Repository secrets configured:
+- `RELEASE_KEYSTORE_BASE64`: Base64-encoded release `.jks` file.
+- `HEALTHANALYZER_STORE_PASSWORD`, `HEALTHANALYZER_KEY_ALIAS`, `HEALTHANALYZER_KEY_PASSWORD`: Keystore credentials.
+- `SAMSUNG_SDK_DECRYPT_KEY`: Decryption key for `app/libs/samsung-health-data-api-1.1.0.aar.enc`.
+
 ## Project layout
 
 ```

@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -77,7 +78,15 @@ private fun AnalyzePane(vm: AiViewModel, onOpenSettings: () -> Unit) {
     val baseline by vm.baseline.collectAsStateWithLifecycle()
     val useBaseline by vm.useBaseline.collectAsStateWithLifecycle()
     var showPrompt by rememberSaveable { mutableStateOf(false) }
+    var resultExpanded by rememberSaveable { mutableStateOf(true) }
     val clipboard = LocalClipboardManager.current
+    val analyzeListState = rememberLazyListState()
+
+    androidx.compose.runtime.LaunchedEffect(state.running) {
+        if (state.running) {
+            resultExpanded = true
+        }
+    }
 
     val viewing = state.viewing
     if (viewing != null) {
@@ -98,6 +107,7 @@ private fun AnalyzePane(vm: AiViewModel, onOpenSettings: () -> Unit) {
     val run = runs.firstOrNull { it.id == state.runId }
 
     LazyColumn(
+        state = analyzeListState,
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
@@ -327,7 +337,7 @@ private fun AnalyzePane(vm: AiViewModel, onOpenSettings: () -> Unit) {
             item { PromptBlock(state.sentSystem, state.sentUser) }
         }
 
-        // Live / Current Output Card
+        // Live / Current Output Card (Foldable)
         if (state.output.isNotEmpty()) {
             item {
                 Card(
@@ -338,17 +348,33 @@ private fun AnalyzePane(vm: AiViewModel, onOpenSettings: () -> Unit) {
                 ) {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         Row(
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable { resultExpanded = !resultExpanded },
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.SpaceBetween,
                         ) {
-                            Text(
-                                "Analysis Result",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.primary,
-                            )
-                            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            ) {
+                                Text(
+                                    "Analysis Result",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary,
+                                )
+                                Text(
+                                    if (resultExpanded) "▲" else "▼",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.primary,
+                                )
+                            }
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            ) {
                                 TextButton(
                                     onClick = { clipboard.setText(AnnotatedString(state.output)) },
                                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
@@ -363,10 +389,24 @@ private fun AnalyzePane(vm: AiViewModel, onOpenSettings: () -> Unit) {
                                         Text("Save Baseline ★", style = MaterialTheme.typography.labelSmall)
                                     }
                                 }
+                                TextButton(
+                                    onClick = { resultExpanded = !resultExpanded },
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                ) {
+                                    Text(
+                                        if (resultExpanded) "Fold ▲" else "Unfold ▼",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.SemiBold,
+                                    )
+                                }
                             }
                         }
-                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-                        MarkdownText(state.output)
+                        AnimatedVisibility(visible = resultExpanded) {
+                            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                                MarkdownText(state.output)
+                            }
+                        }
                     }
                 }
             }

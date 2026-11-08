@@ -13,6 +13,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -63,6 +65,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.healthanalyzer.app.ai.AiProviderEntity
@@ -112,6 +115,7 @@ fun SettingsScreen(vm: AiViewModel, activity: Activity, runsVm: RunsViewModel) {
     val themeConfig by vm.themeConfig.collectAsStateWithLifecycle()
 
     var currentLayer by rememberSaveable { mutableStateOf(SettingsLayer.HUB) }
+    var aiSubTab by rememberSaveable { mutableIntStateOf(0) }
     var editingProvider by remember { mutableStateOf<ProviderForm?>(null) }
     var editingPrompt by remember { mutableStateOf<PromptTemplateEntity?>(null) }
     var editingBaseline by remember { mutableStateOf(false) }
@@ -202,6 +206,8 @@ fun SettingsScreen(vm: AiViewModel, activity: Activity, runsVm: RunsViewModel) {
                     baseline = baseline,
                     useBaseline = useBaseline,
                     listState = aiListState,
+                    subTab = aiSubTab,
+                    onSubTabChange = { aiSubTab = it },
                     onAddProvider = { editingProvider = ProviderForm() },
                     onEditProvider = { editingProvider = vm.formFor(it) },
                     onDeleteProvider = vm::deleteProvider,
@@ -209,6 +215,9 @@ fun SettingsScreen(vm: AiViewModel, activity: Activity, runsVm: RunsViewModel) {
                         editingPrompt = PromptTemplateEntity(name = "", systemPrompt = "", userTemplate = "{{athlete}}\n\n{{run}}")
                     },
                     onEditPrompt = { editingPrompt = it },
+                    onDuplicatePrompt = {
+                        editingPrompt = it.copy(id = 0L, name = "${it.name} (Copy)")
+                    },
                     onDeletePrompt = vm::deletePrompt,
                     onRestoreDefaultPrompts = vm::restoreDefaultPrompts,
                     onUseBaselineChange = vm::setUseBaseline,
@@ -283,7 +292,7 @@ private fun SettingsHubScreen(
 
     LazyColumn(
         state = listState,
-        contentPadding = PaddingValues(16.dp),
+        contentPadding = PaddingValues(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 120.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         item {
@@ -438,7 +447,7 @@ private fun SettingsHubScreen(
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 Text(
-                    "HealthAnalyzer v1.1.0",
+                    "HealthAnalyzer v1.2.0",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
                     fontWeight = FontWeight.Medium,
@@ -598,7 +607,7 @@ private fun AthleteProfileSubScreen(
 ) {
     LazyColumn(
         state = listState,
-        contentPadding = PaddingValues(16.dp),
+        contentPadding = PaddingValues(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 120.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         item {
@@ -647,6 +656,7 @@ private fun AthleteProfileSubScreen(
 // LAYER 2: AI MODELS & PROMPTS
 // -----------------------------------------------------------------------------
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun AiConfigSubScreen(
     vm: AiViewModel,
@@ -655,11 +665,14 @@ private fun AiConfigSubScreen(
     baseline: Baseline?,
     useBaseline: Boolean,
     listState: LazyListState,
+    subTab: Int,
+    onSubTabChange: (Int) -> Unit,
     onAddProvider: () -> Unit,
     onEditProvider: (AiProviderEntity) -> Unit,
     onDeleteProvider: (AiProviderEntity) -> Unit,
     onNewPrompt: () -> Unit,
     onEditPrompt: (PromptTemplateEntity) -> Unit,
+    onDuplicatePrompt: (PromptTemplateEntity) -> Unit,
     onDeletePrompt: (PromptTemplateEntity) -> Unit,
     onRestoreDefaultPrompts: () -> Unit,
     onUseBaselineChange: (Boolean) -> Unit,
@@ -667,12 +680,11 @@ private fun AiConfigSubScreen(
     onClearBaseline: () -> Unit,
     onBack: () -> Unit,
 ) {
-    var subTab by rememberSaveable { mutableIntStateOf(0) }
     val tabTitles = listOf("Providers (${providers.size})", "Prompts (${prompts.size})", "Baseline")
 
     LazyColumn(
         state = listState,
-        contentPadding = PaddingValues(16.dp),
+        contentPadding = PaddingValues(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 120.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         item {
@@ -687,7 +699,7 @@ private fun AiConfigSubScreen(
             SegmentedSwitcher(
                 selectedIndex = subTab,
                 options = tabTitles,
-                onSelect = { subTab = it },
+                onSelect = onSubTabChange,
             )
         }
 
@@ -761,15 +773,21 @@ private fun AiConfigSubScreen(
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
+                                FlowRow(
                                     horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                    verticalArrangement = Arrangement.spacedBy(4.dp),
                                 ) {
-                                    Text(p.name, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyMedium)
+                                    Text(
+                                        p.name,
+                                        fontWeight = FontWeight.Bold,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        modifier = Modifier.align(Alignment.CenterVertically),
+                                    )
                                     StatusBadge(
                                         text = p.protocol.label,
                                         containerColor = MaterialTheme.colorScheme.primaryContainer,
                                         contentColor = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.align(Alignment.CenterVertically),
                                     )
                                 }
                                 Text(
@@ -822,28 +840,46 @@ private fun AiConfigSubScreen(
                     ) {
                         Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
+                                FlowRow(
                                     horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                    verticalArrangement = Arrangement.spacedBy(4.dp),
                                 ) {
-                                    Text(t.name, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyMedium)
+                                    Text(
+                                        t.name,
+                                        fontWeight = FontWeight.SemiBold,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        modifier = Modifier.align(Alignment.CenterVertically),
+                                    )
                                     if (t.savesBaseline) {
                                         StatusBadge(
                                             text = "Saves Baseline ★",
                                             containerColor = MaterialTheme.colorScheme.tertiaryContainer,
                                             contentColor = MaterialTheme.colorScheme.tertiary,
+                                            modifier = Modifier.align(Alignment.CenterVertically),
                                         )
                                     }
                                 }
                                 Text(
                                     t.userTemplate.lineSequence().firstOrNull { it.isNotBlank() && !it.startsWith("{{") }.orEmpty(),
                                     maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
                             }
-                            TextButton(onClick = { onDeletePrompt(t) }) {
-                                Text("Delete", color = MaterialTheme.colorScheme.error)
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                TextButton(
+                                    onClick = { onDuplicatePrompt(t) },
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                ) {
+                                    Text("Duplicate")
+                                }
+                                TextButton(
+                                    onClick = { onDeletePrompt(t) },
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                ) {
+                                    Text("Delete", color = MaterialTheme.colorScheme.error)
+                                }
                             }
                         }
                     }
@@ -927,7 +963,7 @@ private fun AppearanceSubScreen(
 
     LazyColumn(
         state = listState,
-        contentPadding = PaddingValues(16.dp),
+        contentPadding = PaddingValues(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 120.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         item {
@@ -1272,7 +1308,7 @@ private fun DataIntegrationsSubScreen(
 ) {
     LazyColumn(
         state = listState,
-        contentPadding = PaddingValues(16.dp),
+        contentPadding = PaddingValues(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 120.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         item {
@@ -1326,7 +1362,7 @@ private fun BackupSubScreen(
 ) {
     LazyColumn(
         state = listState,
-        contentPadding = PaddingValues(16.dp),
+        contentPadding = PaddingValues(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 120.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         item {
@@ -1363,7 +1399,7 @@ private fun SetupGuidesSubScreen(
 ) {
     LazyColumn(
         state = listState,
-        contentPadding = PaddingValues(16.dp),
+        contentPadding = PaddingValues(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 120.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         item {
@@ -1400,7 +1436,7 @@ private fun ProviderEditor(vm: AiViewModel, initial: ProviderForm, onDone: () ->
     var form by remember { mutableStateOf(initial) }
     val models by vm.models.collectAsStateWithLifecycle()
 
-    LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    LazyColumn(contentPadding = PaddingValues(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 120.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         item {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -1573,7 +1609,7 @@ private fun PromptEditor(initial: PromptTemplateEntity, onSave: (PromptTemplateE
     var user by remember { mutableStateOf(initial.userTemplate) }
     var savesBaseline by remember { mutableStateOf(initial.savesBaseline) }
 
-    LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    LazyColumn(contentPadding = PaddingValues(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 120.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         item {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -1591,7 +1627,16 @@ private fun PromptEditor(initial: PromptTemplateEntity, onSave: (PromptTemplateE
                     }
                 }
                 Text(if (initial.id == 0L) "New Prompt Template" else "Edit Prompt Template", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                Spacer(Modifier.size(38.dp))
+                if (initial.id != 0L) {
+                    TextButton(onClick = {
+                        val copyName = if (name.trim() == initial.name) "${name.trim()} (Copy)" else name.trim()
+                        onSave(initial.copy(id = 0L, name = copyName, systemPrompt = system, userTemplate = user, savesBaseline = savesBaseline))
+                    }) {
+                        Text("Duplicate")
+                    }
+                } else {
+                    Spacer(Modifier.size(38.dp))
+                }
             }
         }
         item {
@@ -1610,21 +1655,19 @@ private fun PromptEditor(initial: PromptTemplateEntity, onSave: (PromptTemplateE
             )
         }
         item {
-            OutlinedTextField(
-                system,
-                { system = it },
-                label = { Text("System Prompt") },
-                shape = RoundedCornerShape(12.dp),
+            PlaceholderAwareTextField(
+                value = system,
+                onValueChange = { system = it },
+                label = "System Prompt",
                 minLines = 3,
                 modifier = Modifier.fillMaxWidth(),
             )
         }
         item {
-            OutlinedTextField(
-                user,
-                { user = it },
-                label = { Text("User Message Template") },
-                shape = RoundedCornerShape(12.dp),
+            PlaceholderAwareTextField(
+                value = user,
+                onValueChange = { user = it },
+                label = "User Message Template",
                 minLines = 6,
                 modifier = Modifier.fillMaxWidth(),
             )
@@ -1635,21 +1678,42 @@ private fun PromptEditor(initial: PromptTemplateEntity, onSave: (PromptTemplateE
                 shape = RoundedCornerShape(12.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
             ) {
-                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text("Supported Placeholders", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                    Text("Tip: Type {{ anywhere in the prompt to insert placeholders from the dropdown list.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.tertiary, fontWeight = FontWeight.SemiBold)
                     Text(PromptRenderer.PLACEHOLDER_HELP, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
                 }
             }
         }
         item {
-            Button(
-                onClick = {
-                    onSave(initial.copy(name = name.trim(), systemPrompt = system, userTemplate = user, savesBaseline = savesBaseline))
-                },
-                enabled = name.isNotBlank() && user.isNotBlank(),
-                shape = RoundedCornerShape(12.dp),
+            Row(
                 modifier = Modifier.fillMaxWidth(),
-            ) { Text("Save Prompt Template", fontWeight = FontWeight.Bold) }
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                if (initial.id != 0L) {
+                    OutlinedButton(
+                        onClick = {
+                            val copyName = if (name.trim() == initial.name) "${name.trim()} (Copy)" else name.trim()
+                            onSave(initial.copy(id = 0L, name = copyName, systemPrompt = system, userTemplate = user, savesBaseline = savesBaseline))
+                        },
+                        enabled = name.isNotBlank() && user.isNotBlank(),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text("Save as Copy")
+                    }
+                }
+                Button(
+                    onClick = {
+                        onSave(initial.copy(name = name.trim(), systemPrompt = system, userTemplate = user, savesBaseline = savesBaseline))
+                    },
+                    enabled = name.isNotBlank() && user.isNotBlank(),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text(if (initial.id == 0L) "Save Prompt Template" else "Save Changes", fontWeight = FontWeight.Bold)
+                }
+            }
         }
     }
 }
@@ -1858,7 +1922,7 @@ private fun BaselineSection(
 @Composable
 private fun BaselineEditor(initial: String, onSave: (String) -> Unit, onCancel: () -> Unit) {
     var text by remember { mutableStateOf(initial) }
-    LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    LazyColumn(contentPadding = PaddingValues(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 120.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         item {
             Row(
                 modifier = Modifier.fillMaxWidth(),

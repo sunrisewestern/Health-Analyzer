@@ -2,8 +2,12 @@ package com.healthanalyzer.app.ui
 
 import android.app.Activity
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.MaterialTheme
@@ -33,11 +37,14 @@ private enum class Tab(val label: String) {
     SETTINGS("Settings"),
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun AppRoot(runsVm: RunsViewModel, aiVm: AiViewModel, activity: Activity) {
     var tab by rememberSaveable { mutableIntStateOf(Tab.RUNS.ordinal) }
     val snackbar = remember { SnackbarHostState() }
     val message by aiVm.settingsMessage.collectAsStateWithLifecycle()
+    val isKeyboardOpen = WindowInsets.isImeVisible
+
     LaunchedEffect(message) {
         message?.let {
             snackbar.showSnackbar(it, withDismissAction = true, duration = SnackbarDuration.Long)
@@ -48,42 +55,50 @@ fun AppRoot(runsVm: RunsViewModel, aiVm: AiViewModel, activity: Activity) {
     Scaffold(
         snackbarHost = { SnackbarHost(snackbar) },
         bottomBar = {
-            NavigationBar(
-                containerColor = MaterialTheme.colorScheme.surfaceContainer,
-                tonalElevation = 6.dp,
-            ) {
-                Tab.entries.forEach { t ->
-                    val isSelected = tab == t.ordinal
-                    val iconColor = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-                    NavigationBarItem(
-                        selected = isSelected,
-                        onClick = { tab = t.ordinal },
-                        icon = {
-                            when (t) {
-                                Tab.RUNS -> AppIcons.Runner(modifier = Modifier.size(24.dp), tint = iconColor)
-                                Tab.ANALYZE -> AppIcons.Sparkles(modifier = Modifier.size(24.dp), tint = iconColor)
-                                Tab.SETTINGS -> AppIcons.Tune(modifier = Modifier.size(24.dp), tint = iconColor)
-                            }
-                        },
-                        label = {
-                            Text(
-                                t.label,
-                                fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
-                            )
-                        },
-                        colors = NavigationBarItemDefaults.colors(
-                            selectedIconColor = MaterialTheme.colorScheme.primary,
-                            selectedTextColor = MaterialTheme.colorScheme.primary,
-                            unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                            unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                            indicatorColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f),
-                        ),
-                    )
+            if (!isKeyboardOpen) {
+                NavigationBar(
+                    containerColor = MaterialTheme.colorScheme.surfaceContainer,
+                    tonalElevation = 6.dp,
+                ) {
+                    Tab.entries.forEach { t ->
+                        val isSelected = tab == t.ordinal
+                        val iconColor = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                        NavigationBarItem(
+                            selected = isSelected,
+                            onClick = { tab = t.ordinal },
+                            icon = {
+                                when (t) {
+                                    Tab.RUNS -> AppIcons.Runner(modifier = Modifier.size(24.dp), tint = iconColor)
+                                    Tab.ANALYZE -> AppIcons.Sparkles(modifier = Modifier.size(24.dp), tint = iconColor)
+                                    Tab.SETTINGS -> AppIcons.Tune(modifier = Modifier.size(24.dp), tint = iconColor)
+                                }
+                            },
+                            label = {
+                                Text(
+                                    t.label,
+                                    fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+                                )
+                            },
+                            colors = NavigationBarItemDefaults.colors(
+                                selectedIconColor = MaterialTheme.colorScheme.primary,
+                                selectedTextColor = MaterialTheme.colorScheme.primary,
+                                unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                indicatorColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f),
+                            ),
+                        )
+                    }
                 }
             }
         },
     ) { padding ->
-        Box(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding)) {
+        Box(
+            Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .consumeWindowInsets(padding)
+                .imePadding()
+        ) {
             when (Tab.entries[tab]) {
                 Tab.RUNS -> RunsScreen(runsVm, activity, onAnalyzeRun = { id ->
                     aiVm.prepareForRun(id)

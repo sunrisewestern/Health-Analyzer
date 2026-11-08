@@ -17,6 +17,8 @@ dist/
 # Local tool state
 .omc/
 .claude/settings.local.json
+.agent
+.agents/
 
 # Samsung Health Data SDK – download it yourself from developer.samsung.com (see README)
 app/libs/*.aar

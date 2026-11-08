@@ -19,7 +19,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -79,6 +81,7 @@ fun RunsScreen(viewModel: RunsViewModel, activity: Activity, onAnalyzeRun: (Stri
     val state by viewModel.state.collectAsStateWithLifecycle()
     val runs by viewModel.runs.collectAsStateWithLifecycle()
     var helpGuide by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf<SetupGuide?>(null) }
+    val runListState = rememberLazyListState()
 
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column {
@@ -137,6 +140,7 @@ fun RunsScreen(viewModel: RunsViewModel, activity: Activity, onAnalyzeRun: (Stri
                     garminConnected = state.garminConnected,
                     garminLastSync = state.garminLastSync,
                     onSyncGarmin = viewModel::syncGarmin,
+                    listState = runListState,
                 )
             }
         }
@@ -159,14 +163,15 @@ private fun RunListView(
     garminConnected: Boolean,
     garminLastSync: String?,
     onSyncGarmin: (full: Boolean) -> Unit,
+    listState: LazyListState = rememberLazyListState(),
 ) {
     val runs = remember(allRuns, filter) { filter.apply(allRuns) }
     val summary = remember(runs, filter) { RunSummary.of(runs, rangeDays = filter.range.days) }
     val totalDistanceKm = remember(allRuns) { allRuns.sumOf { (it.distanceM ?: 0f).toDouble() } / 1000 }
     val totalDurationSec = remember(allRuns) { allRuns.sumOf { it.durationSec } }
 
-
     LazyColumn(
+        state = listState,
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {

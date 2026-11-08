@@ -1,19 +1,33 @@
 package com.healthanalyzer.app.ui
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.TextLinkStyles
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.withLink
 import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.window.PopupProperties
+import kotlinx.coroutines.launch
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -156,6 +170,9 @@ fun StatusBadge(
                 style = MaterialTheme.typography.labelSmall,
                 color = contentColor,
                 fontWeight = FontWeight.Medium,
+                maxLines = 1,
+                softWrap = false,
+                overflow = TextOverflow.Ellipsis,
             )
         }
     }
@@ -511,4 +528,183 @@ private fun inline(raw: String): AnnotatedString = buildAnnotatedString {
         last = m.range.last + 1
     }
     append(s.substring(last))
+}
+
+data class PlaceholderItem(
+    val tag: String,
+    val label: String,
+    val description: String,
+)
+
+val PROMPT_PLACEHOLDERS = listOf(
+    PlaceholderItem("athlete", "{{athlete}}", "Max/resting HR, notes and goals from Settings"),
+    PlaceholderItem("run", "{{run}}", "Target workout run: metrics, km splits, HR zones, drift"),
+    PlaceholderItem("recent_runs", "{{recent_runs}}", "Recent runs, last 28 days (or {{recent_runs:N}})"),
+    PlaceholderItem("weekly_summary", "{{weekly_summary}}", "Weekly totals, last 12 weeks (or {{weekly_summary:N}})"),
+    PlaceholderItem("dynamics", "{{dynamics}}", "Running form averages: cadence, contact time, oscillation"),
+    PlaceholderItem("running_stats", "{{running_stats}}", "Long-term monthly stats, bests, easy-run pace/HR"),
+    PlaceholderItem("baseline", "{{baseline}}", "Saved athlete baseline profile"),
+    PlaceholderItem("today", "{{today}}", "Today's date (yyyy-mm-dd)"),
+    PlaceholderItem("language", "{{language}}", "Reply language configured in Settings"),
+)
+
+internal data class PlaceholderMatch(
+    val isActive: Boolean,
+    val query: String,
+    val openIndex: Int,
+)
+
+internal fun detectPlaceholderQuery(text: String, cursor: Int): PlaceholderMatch {
+    if (cursor !in 0..text.length) return PlaceholderMatch(false, "", -1)
+    val lastOpen = text.substring(0, cursor).lastIndexOf("{{")
+    if (lastOpen == -1) return PlaceholderMatch(false, "", -1)
+    val candidate = text.substring(lastOpen + 2, cursor)
+    if (candidate.contains("}}") || candidate.contains("}") ||
+        candidate.contains("\n") || candidate.contains("\r") ||
+        candidate.contains("{")
+    ) {
+        return PlaceholderMatch(false, "", -1)
+    }
+    return PlaceholderMatch(true, candidate.trim(), lastOpen)
+}
+
+internal fun insertPlaceholder(text: String, cursor: Int, openIndex: Int, tag: String): Pair<String, Int> {
+    val prefix = text.substring(0, openIndex)
+    val remainder = text.substring(cursor)
+    val suffix = when {
+        remainder.startsWith("}}") -> remainder.substring(2)
+        remainder.startsWith("}") -> remainder.substring(1)
+        else -> remainder
+    }
+    val insertion = "{{$tag}}"
+    val newText = prefix + insertion + suffix
+    val newCursor = prefix.length + insertion.length
+    return Pair(newText, newCursor)
+}
+
+internal fun filterPlaceholders(query: String, placeholders: List<PlaceholderItem>): List<PlaceholderItem> {
+    if (query.isEmpty()) return placeholders
+    return placeholders.filter {
+        it.tag.contains(query, ignoreCase = true) ||
+        it.label.contains(query, ignoreCase = true) ||
+        it.description.contains(query, ignoreCase = true)
+    }.sortedBy {
+        if (it.tag.startsWith(query, ignoreCase = true)) 0 else 1
+    }
+}
+
+/**
+ * Text field with intelligent placeholder insertion.
+ * When the user types `{{`, a dropdown list opens.
+ * As the user types after `{{`, the dropdown list filters in real-time based on input.
+ * Selecting a placeholder inserts it into the text and places the cursor right after `}}`.
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+fun PlaceholderAwareTextField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    label: String,
+    modifier: Modifier = Modifier,
+    minLines: Int = 1,
+    maxLines: Int = Int.MAX_VALUE,
+    placeholders: List<PlaceholderItem> = PROMPT_PLACEHOLDERS,
+) {
+    var tfv by remember { mutableStateOf(TextFieldValue(value, TextRange(value.length))) }
+
+    LaunchedEffect(value) {
+        if (value != tfv.text) {
+            val safeSelection = TextRange(value.length.coerceAtMost(tfv.selection.end))
+            tfv = tfv.copy(text = value, selection = safeSelection)
+        }
+    }
+
+    val text = tfv.text
+    val cursor = tfv.selection.end
+    val coroutineScope = rememberCoroutineScope()
+    val bringIntoViewRequester = remember { BringIntoViewRequester() }
+
+    val match = remember(text, cursor) { detectPlaceholderQuery(text, cursor) }
+    val filteredPlaceholders = remember(match.query, placeholders, match.isActive) {
+        if (!match.isActive) emptyList() else filterPlaceholders(match.query, placeholders)
+    }
+
+    var dismissedForIndex by remember { mutableIntStateOf(-1) }
+
+    Box(modifier = modifier) {
+        OutlinedTextField(
+            value = tfv,
+            onValueChange = { newTfv ->
+                tfv = newTfv
+                onValueChange(newTfv.text)
+                coroutineScope.launch {
+                    bringIntoViewRequester.bringIntoView()
+                }
+            },
+            label = { Text(label) },
+            shape = RoundedCornerShape(12.dp),
+            minLines = minLines,
+            maxLines = maxLines,
+            modifier = Modifier
+                .fillMaxWidth()
+                .bringIntoViewRequester(bringIntoViewRequester)
+                .onFocusChanged {
+                    if (it.isFocused) {
+                        coroutineScope.launch {
+                            bringIntoViewRequester.bringIntoView()
+                        }
+                    }
+                },
+        )
+
+        DropdownMenu(
+            expanded = match.isActive && filteredPlaceholders.isNotEmpty() && dismissedForIndex != match.openIndex,
+            onDismissRequest = { dismissedForIndex = match.openIndex },
+            properties = PopupProperties(focusable = false),
+            modifier = Modifier
+                .fillMaxWidth(0.92f)
+                .heightIn(max = 260.dp)
+                .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+        ) {
+            Column(Modifier.padding(horizontal = 14.dp, vertical = 6.dp)) {
+                Text(
+                    if (match.query.isEmpty()) "Insert Placeholder (type to filter)" else "Placeholders matching \"${match.query}\":",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+            filteredPlaceholders.forEach { item ->
+                DropdownMenuItem(
+                    text = {
+                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text(
+                                item.label,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary,
+                                style = MaterialTheme.typography.bodyMedium,
+                            )
+                            Text(
+                                item.description,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    },
+                    onClick = {
+                        val (newText, newCursor) = insertPlaceholder(text, cursor, match.openIndex, item.tag)
+                        tfv = TextFieldValue(newText, TextRange(newCursor))
+                        onValueChange(newText)
+                        coroutineScope.launch {
+                            bringIntoViewRequester.bringIntoView()
+                        }
+                    },
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                )
+            }
+        }
+    }
 }

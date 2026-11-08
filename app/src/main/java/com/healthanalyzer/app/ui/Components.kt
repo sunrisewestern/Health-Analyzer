@@ -1,6 +1,19 @@
 package com.healthanalyzer.app.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.text.LinkAnnotation
+import androidx.compose.ui.text.TextLinkStyles
+import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.withLink
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -189,103 +202,311 @@ fun SegmentedSwitcher(
 }
 
 /**
- * Small Markdown renderer for model output: headings, bullet and numbered lists,
- * **bold**, `code`, and plain tables (shown monospaced). Text stays selectable.
+ * Small Markdown renderer for model output: headings, bullet and numbered lists, block quotes,
+ * fenced code, GitHub-style tables, and inline **bold**, *italic*, ~~strike~~, `code` and links.
+ * Text stays selectable.
  */
 @Composable
 fun MarkdownText(text: String, modifier: Modifier = Modifier) {
+    val blocks = remember(text) { parseMarkdownBlocks(text) }
     SelectionContainer(modifier) {
         Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            var inCode = false
-            text.lines().forEach { raw ->
-                val line = raw.trimEnd()
-                when {
-                    line.trimStart().startsWith("```") -> {
-                        inCode = !inCode
-                        if (!inCode) {
-                            Spacer(Modifier.height(4.dp))
-                        }
-                    }
-                    inCode -> {
-                        Surface(
-                            color = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.7f),
-                            shape = RoundedCornerShape(4.dp),
-                            modifier = Modifier.fillMaxWidth().padding(vertical = 1.dp),
-                        ) {
-                            Text(
-                                line,
-                                fontFamily = FontFamily.Monospace,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
-                            )
-                        }
-                    }
-                    line.trimStart().startsWith("|") -> {
-                        Text(
-                            line,
-                            fontFamily = FontFamily.Monospace,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurface,
-                        )
-                    }
-                    line.startsWith("#") -> {
-                        val level = line.takeWhile { it == '#' }.length
-                        Text(
-                            inline(line.drop(level).trim()),
-                            style = if (level <= 2) MaterialTheme.typography.titleLarge else MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.padding(top = 12.dp, bottom = 4.dp),
-                        )
-                    }
-                    line.trim() == "---" || line.trim() == "***" -> {
-                        Spacer(Modifier.height(8.dp))
-                    }
-                    BULLET.matches(line) -> {
-                        val m = BULLET.find(line)!!
-                        val indent = (m.groupValues[1].length / 2).coerceAtMost(4)
-                        Row(Modifier.padding(start = (8 + indent * 12).dp, top = 2.dp)) {
-                            Text("•  ", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
-                            Text(inline(m.groupValues[2]), style = MaterialTheme.typography.bodyMedium)
-                        }
-                    }
-                    NUMBERED.matches(line) -> {
-                        val m = NUMBERED.find(line)!!
-                        Row(Modifier.padding(start = 8.dp, top = 2.dp)) {
-                            Text("${m.groupValues[2]}.  ", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
-                            Text(inline(m.groupValues[3]), style = MaterialTheme.typography.bodyMedium)
-                        }
-                    }
-                    line.isBlank() -> Spacer(Modifier.height(4.dp))
-                    else -> Text(
-                        inline(line),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurface,
-                    )
+            blocks.forEach { block ->
+                when (block) {
+                    is MdBlock.Code -> CodeLine(block.line)
+                    is MdBlock.Table -> MarkdownTable(block)
+                    is MdBlock.Line -> MarkdownLine(block.line)
                 }
             }
         }
     }
 }
 
+@Composable
+private fun CodeLine(line: String) {
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.7f),
+        shape = RoundedCornerShape(4.dp),
+        modifier = Modifier.fillMaxWidth().padding(vertical = 1.dp),
+    ) {
+        Text(
+            line,
+            fontFamily = FontFamily.Monospace,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+        )
+    }
+}
+
+@Composable
+private fun MarkdownLine(line: String) {
+    when {
+        line.isBlank() -> Spacer(Modifier.height(4.dp))
+        HEADING.matches(line) -> {
+            val m = HEADING.find(line)!!
+            val level = m.groupValues[1].length
+            Text(
+                inline(m.groupValues[2].trim().trimEnd('#').trim()),
+                style = when {
+                    level <= 2 -> MaterialTheme.typography.titleLarge
+                    level == 3 -> MaterialTheme.typography.titleMedium
+                    else -> MaterialTheme.typography.titleSmall
+                },
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(top = 12.dp, bottom = 4.dp),
+            )
+        }
+        RULE.matches(line) -> {
+            HorizontalDivider(
+                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f),
+                modifier = Modifier.padding(vertical = 8.dp),
+            )
+        }
+        QUOTE.matches(line) -> {
+            Row(Modifier.padding(vertical = 2.dp).height(IntrinsicSize.Min)) {
+                Box(
+                    Modifier.width(3.dp).fillMaxHeight()
+                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.6f)),
+                )
+                Text(
+                    inline(QUOTE.find(line)!!.groupValues[1]),
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontStyle = FontStyle.Italic,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(start = 10.dp),
+                )
+            }
+        }
+        BULLET.matches(line) -> {
+            val m = BULLET.find(line)!!
+            val indent = (m.groupValues[1].length / 2).coerceAtMost(4)
+            Row(Modifier.padding(start = (8 + indent * 12).dp, top = 2.dp)) {
+                Text("•  ", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                Text(inline(m.groupValues[2]), style = MaterialTheme.typography.bodyMedium)
+            }
+        }
+        NUMBERED.matches(line) -> {
+            val m = NUMBERED.find(line)!!
+            val indent = (m.groupValues[1].length / 2).coerceAtMost(4)
+            Row(Modifier.padding(start = (8 + indent * 12).dp, top = 2.dp)) {
+                Text("${m.groupValues[2]}.  ", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
+                Text(inline(m.groupValues[3]), style = MaterialTheme.typography.bodyMedium)
+            }
+        }
+        else -> Text(
+            inline(line),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+    }
+}
+
+/**
+ * Grid table: each column is as wide as its widest cell (capped, long cells wrap), each row as tall
+ * as its tallest cell. Tables wider than the screen scroll horizontally.
+ */
+@Composable
+private fun MarkdownTable(table: MdBlock.Table) {
+    val cols = table.columnCount
+    val border = MaterialTheme.colorScheme.outlineVariant
+    val headerBg = MaterialTheme.colorScheme.surfaceContainerHighest
+    val stripeBg = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.4f)
+    val rows = listOfNotNull(table.header) + table.rows
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .padding(vertical = 6.dp)
+            .horizontalScroll(rememberScrollState()),
+    ) {
+        Layout(
+            modifier = Modifier
+                .clip(RoundedCornerShape(6.dp))
+                .border(1.dp, border, RoundedCornerShape(6.dp)),
+            content = {
+                rows.forEachIndexed { r, row ->
+                    val isHeader = table.header != null && r == 0
+                    val bodyIndex = if (table.header != null) r - 1 else r
+                    repeat(cols) { c ->
+                        Box(
+                            Modifier
+                                .background(
+                                    when {
+                                        isHeader -> headerBg
+                                        bodyIndex % 2 == 1 -> stripeBg
+                                        else -> Color.Transparent
+                                    },
+                                )
+                                .border(0.5.dp, border.copy(alpha = 0.6f))
+                                .padding(horizontal = 10.dp, vertical = 6.dp),
+                        ) {
+                            Text(
+                                inline(row.getOrElse(c) { "" }),
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = if (isHeader) FontWeight.SemiBold else FontWeight.Normal,
+                                color = if (isHeader) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                                textAlign = when (table.aligns.getOrNull(c)) {
+                                    MdAlign.Center -> TextAlign.Center
+                                    MdAlign.Right -> TextAlign.End
+                                    else -> TextAlign.Start
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                        }
+                    }
+                }
+            },
+        ) { measurables, _ ->
+            val maxCol = 220.dp.roundToPx()
+            val minCol = 40.dp.roundToPx()
+            val widths = IntArray(cols) { minCol }
+            measurables.forEachIndexed { i, m ->
+                val c = i % cols
+                widths[c] = maxOf(widths[c], m.maxIntrinsicWidth(Constraints.Infinity).coerceAtMost(maxCol))
+            }
+            val heights = IntArray(rows.size)
+            measurables.forEachIndexed { i, m ->
+                val r = i / cols
+                heights[r] = maxOf(heights[r], m.minIntrinsicHeight(widths[i % cols]))
+            }
+            val placeables = measurables.mapIndexed { i, m ->
+                m.measure(Constraints.fixed(widths[i % cols], heights[i / cols]))
+            }
+            layout(widths.sum(), heights.sum()) {
+                var y = 0
+                for (r in rows.indices) {
+                    var x = 0
+                    for (c in 0 until cols) {
+                        placeables[r * cols + c].place(x, y)
+                        x += widths[c]
+                    }
+                    y += heights[r]
+                }
+            }
+        }
+    }
+}
+
+internal enum class MdAlign { Left, Center, Right }
+
+internal sealed interface MdBlock {
+    data class Line(val line: String) : MdBlock
+    data class Code(val line: String) : MdBlock
+    data class Table(val header: List<String>?, val aligns: List<MdAlign>, val rows: List<List<String>>) : MdBlock {
+        val columnCount: Int get() = maxOf(header?.size ?: 0, rows.maxOfOrNull { it.size } ?: 0, 1)
+    }
+}
+
+/** Splits Markdown into renderable blocks, grouping consecutive pipe rows into tables. */
+internal fun parseMarkdownBlocks(text: String): List<MdBlock> {
+    val lines = text.lines().map { it.trimEnd() }
+    val out = mutableListOf<MdBlock>()
+    var inCode = false
+    var i = 0
+    while (i < lines.size) {
+        val line = lines[i]
+        when {
+            line.trimStart().startsWith("```") -> {
+                inCode = !inCode
+                if (!inCode) out += MdBlock.Line("")
+                i++
+            }
+            inCode -> { out += MdBlock.Code(line); i++ }
+            isTableStart(lines, i) -> {
+                val tableLines = mutableListOf<String>()
+                while (i < lines.size && lines[i].isNotBlank() && '|' in lines[i]) tableLines += lines[i++]
+                out += buildTable(tableLines)
+            }
+            else -> { out += MdBlock.Line(line); i++ }
+        }
+    }
+    return out
+}
+
+private fun isTableStart(lines: List<String>, i: Int): Boolean {
+    val line = lines[i].trim()
+    if (line.startsWith("|")) return true
+    // Tables written without outer pipes: "a | b" followed by "---|---".
+    return '|' in line && lines.getOrNull(i + 1)?.let { TABLE_SEPARATOR.matches(it) } == true
+}
+
+private fun buildTable(lines: List<String>): MdBlock.Table {
+    val hasHeader = lines.size >= 2 && TABLE_SEPARATOR.matches(lines[1])
+    if (!hasHeader) {
+        return MdBlock.Table(null, emptyList(), lines.filterNot { TABLE_SEPARATOR.matches(it) }.map(::splitRow))
+    }
+    val aligns = splitRow(lines[1]).map { spec ->
+        val left = spec.startsWith(":")
+        val right = spec.endsWith(":")
+        when {
+            left && right -> MdAlign.Center
+            right -> MdAlign.Right
+            else -> MdAlign.Left
+        }
+    }
+    val body = lines.drop(2).filterNot { TABLE_SEPARATOR.matches(it) }.map(::splitRow)
+    return MdBlock.Table(splitRow(lines[0]), aligns, body)
+}
+
+internal fun splitRow(line: String): List<String> {
+    var s = line.trim()
+    if (s.startsWith("|")) s = s.substring(1)
+    if (s.endsWith("|") && !s.endsWith("\\|")) s = s.dropLast(1)
+    val cells = mutableListOf<String>()
+    val cur = StringBuilder()
+    var j = 0
+    while (j < s.length) {
+        val ch = s[j]
+        when {
+            ch == '\\' && j + 1 < s.length && s[j + 1] == '|' -> { cur.append('|'); j += 2; continue }
+            ch == '|' -> { cells += cur.toString().trim(); cur.clear() }
+            else -> cur.append(ch)
+        }
+        j++
+    }
+    cells += cur.toString().trim()
+    return cells
+}
+
+private val HEADING = Regex("""^(#{1,6})\s+(.*)$""")
+private val RULE = Regex("""^\s*([-*_])(\s*\1){2,}\s*$""")
+private val QUOTE = Regex("""^\s*>\s?(.*)$""")
 private val BULLET = Regex("""^(\s*)[-*+]\s+(.*)$""")
 private val NUMBERED = Regex("""^(\s*)(\d+)[.)]\s+(.*)$""")
-private val INLINE = Regex("""\*\*(.+?)\*\*|`([^`]+)`""")
+private val TABLE_SEPARATOR = Regex("""^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$""")
+private val INLINE = Regex(
+    """\*\*(.+?)\*\*|__(.+?)__|`([^`]+)`|~~(.+?)~~""" +
+        """|(?<![\w*])\*(?![\s*])(.+?)(?<![\s*])\*(?![\w*])""" +
+        """|(?<![\w_])_(?![\s_])(.+?)(?<![\s_])_(?![\w_])""" +
+        """|\[([^\]]+)]\(([^)\s]+)\)""",
+)
 
-private fun inline(s: String): AnnotatedString = buildAnnotatedString {
+// Models often put HTML line breaks inside table cells, since Markdown cells can't hold newlines.
+private val HTML_BREAK = Regex("""<br\s*/?>""", RegexOption.IGNORE_CASE)
+
+private fun inline(raw: String): AnnotatedString = buildAnnotatedString {
+    val s = raw.replace(HTML_BREAK, "\n")
     var last = 0
     INLINE.findAll(s).forEach { m ->
         append(s.substring(last, m.range.first))
+        val g = m.groupValues
         when {
-            m.groupValues[1].isNotEmpty() -> withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(m.groupValues[1]) }
-            else -> withStyle(
+            g[1].isNotEmpty() -> withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(inline(g[1])) }
+            g[2].isNotEmpty() -> withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(inline(g[2])) }
+            g[3].isNotEmpty() -> withStyle(
                 SpanStyle(
                     fontFamily = FontFamily.Monospace,
                     background = Color(0x22888888),
                     color = Color(0xFF00E5BE),
                 ),
-            ) { append(m.groupValues[2]) }
+            ) { append(g[3]) }
+            g[4].isNotEmpty() -> withStyle(SpanStyle(textDecoration = TextDecoration.LineThrough)) { append(inline(g[4])) }
+            g[5].isNotEmpty() -> withStyle(SpanStyle(fontStyle = FontStyle.Italic)) { append(inline(g[5])) }
+            g[6].isNotEmpty() -> withStyle(SpanStyle(fontStyle = FontStyle.Italic)) { append(inline(g[6])) }
+            else -> withLink(LinkAnnotation.Url(g[8], TextLinkStyles(SpanStyle(color = Color(0xFF00E5BE), textDecoration = TextDecoration.Underline)))) {
+                append(g[7])
+            }
         }
         last = m.range.last + 1
     }

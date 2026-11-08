@@ -5,10 +5,8 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
-import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.lightColorScheme
+import androidx.compose.runtime.getValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.healthanalyzer.app.ui.AiViewModel
 import com.healthanalyzer.app.ui.AppRoot
 import com.healthanalyzer.app.ui.RunsViewModel
@@ -23,7 +21,8 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
-            HealthAnalyzerTheme {
+            val themeConfig by aiViewModel.themeConfig.collectAsStateWithLifecycle()
+            HealthAnalyzerTheme(themeConfig = themeConfig) {
                 AppRoot(runsViewModel, aiViewModel, activity = this)
             }
         }

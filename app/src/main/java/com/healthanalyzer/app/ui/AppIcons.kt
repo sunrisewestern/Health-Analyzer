@@ -238,4 +238,161 @@ object AppIcons {
             drawPath(p, color = tint, style = Stroke(width = sw, cap = StrokeCap.Round, join = StrokeJoin.Round))
         }
     }
+
+    @Composable
+    fun User(
+        modifier: Modifier = Modifier.size(20.dp),
+        tint: Color = LocalContentColor.current,
+        strokeWidth: Dp = 2.dp,
+    ) {
+        Canvas(modifier = modifier) {
+            val sw = strokeWidth.toPx()
+            val w = size.width
+            val h = size.height
+
+            drawCircle(
+                color = tint,
+                radius = w * 0.22f,
+                center = Offset(w * 0.50f, h * 0.32f),
+                style = Stroke(width = sw),
+            )
+
+            val path = Path().apply {
+                moveTo(w * 0.16f, h * 0.84f)
+                cubicTo(
+                    w * 0.16f, h * 0.60f,
+                    w * 0.32f, h * 0.58f,
+                    w * 0.50f, h * 0.58f,
+                )
+                cubicTo(
+                    w * 0.68f, h * 0.58f,
+                    w * 0.84f, h * 0.60f,
+                    w * 0.84f, h * 0.84f,
+                )
+            }
+            drawPath(path, color = tint, style = Stroke(width = sw, cap = StrokeCap.Round))
+        }
+    }
+
+    @Composable
+    fun Database(
+        modifier: Modifier = Modifier.size(20.dp),
+        tint: Color = LocalContentColor.current,
+        strokeWidth: Dp = 1.8.dp,
+    ) {
+        Canvas(modifier = modifier) {
+            val sw = strokeWidth.toPx()
+            val w = size.width
+            val h = size.height
+
+            drawOval(
+                color = tint,
+                topLeft = Offset(w * 0.20f, h * 0.14f),
+                size = Size(w * 0.60f, h * 0.20f),
+                style = Stroke(width = sw),
+            )
+
+            val midPath = Path().apply {
+                moveTo(w * 0.20f, h * 0.46f)
+                cubicTo(
+                    w * 0.20f, h * 0.58f,
+                    w * 0.80f, h * 0.58f,
+                    w * 0.80f, h * 0.46f,
+                )
+            }
+            drawPath(midPath, color = tint, style = Stroke(width = sw, cap = StrokeCap.Round))
+
+            val bodyPath = Path().apply {
+                moveTo(w * 0.20f, h * 0.24f)
+                lineTo(w * 0.20f, h * 0.72f)
+                cubicTo(
+                    w * 0.20f, h * 0.84f,
+                    w * 0.80f, h * 0.84f,
+                    w * 0.80f, h * 0.72f,
+                )
+                lineTo(w * 0.80f, h * 0.24f)
+            }
+            drawPath(bodyPath, color = tint, style = Stroke(width = sw, cap = StrokeCap.Round, join = StrokeJoin.Round))
+        }
+    }
+
+    @Composable
+    fun Cloud(
+        modifier: Modifier = Modifier.size(20.dp),
+        tint: Color = LocalContentColor.current,
+        strokeWidth: Dp = 1.8.dp,
+    ) {
+        Canvas(modifier = modifier) {
+            val sw = strokeWidth.toPx()
+            val w = size.width
+            val h = size.height
+
+            val path = Path().apply {
+                moveTo(w * 0.24f, h * 0.76f)
+                lineTo(w * 0.76f, h * 0.76f)
+                cubicTo(w * 0.90f, h * 0.76f, w * 0.94f, h * 0.62f, w * 0.84f, h * 0.52f)
+                cubicTo(w * 0.86f, h * 0.36f, w * 0.72f, h * 0.26f, w * 0.58f, h * 0.32f)
+                cubicTo(w * 0.50f, h * 0.20f, w * 0.34f, h * 0.24f, w * 0.28f, h * 0.38f)
+                cubicTo(w * 0.12f, h * 0.42f, w * 0.10f, h * 0.64f, w * 0.24f, h * 0.76f)
+                close()
+            }
+            drawPath(path, color = tint, style = Stroke(width = sw, cap = StrokeCap.Round, join = StrokeJoin.Round))
+        }
+    }
+
+    @Composable
+    fun Book(
+        modifier: Modifier = Modifier.size(20.dp),
+        tint: Color = LocalContentColor.current,
+        strokeWidth: Dp = 1.8.dp,
+    ) {
+        Canvas(modifier = modifier) {
+            val sw = strokeWidth.toPx()
+            val w = size.width
+            val h = size.height
+
+            val path = Path().apply {
+                moveTo(w * 0.50f, h * 0.28f)
+                lineTo(w * 0.50f, h * 0.80f)
+
+                moveTo(w * 0.50f, h * 0.28f)
+                cubicTo(w * 0.38f, h * 0.22f, w * 0.24f, h * 0.22f, w * 0.14f, h * 0.26f)
+                lineTo(w * 0.14f, h * 0.74f)
+                cubicTo(w * 0.24f, h * 0.70f, w * 0.38f, h * 0.70f, w * 0.50f, h * 0.76f)
+
+                moveTo(w * 0.50f, h * 0.28f)
+                cubicTo(w * 0.62f, h * 0.22f, w * 0.76f, h * 0.22f, w * 0.86f, h * 0.26f)
+                lineTo(w * 0.86f, h * 0.74f)
+                cubicTo(w * 0.76f, h * 0.70f, w * 0.62f, h * 0.70f, w * 0.50f, h * 0.76f)
+            }
+            drawPath(path, color = tint, style = Stroke(width = sw, cap = StrokeCap.Round, join = StrokeJoin.Round))
+        }
+    }
+
+    @Composable
+    fun Palette(
+        modifier: Modifier = Modifier.size(20.dp),
+        tint: Color = LocalContentColor.current,
+        strokeWidth: Dp = 1.8.dp,
+    ) {
+        Canvas(modifier = modifier) {
+            val sw = strokeWidth.toPx()
+            val w = size.width
+            val h = size.height
+
+            // Outer palette circle with thumb notch
+            drawCircle(
+                color = tint,
+                radius = w * 0.38f,
+                center = Offset(w * 0.50f, h * 0.50f),
+                style = Stroke(width = sw),
+            )
+
+            // Paint dots inside palette
+            drawCircle(color = tint, radius = w * 0.065f, center = Offset(w * 0.35f, h * 0.38f))
+            drawCircle(color = tint, radius = w * 0.065f, center = Offset(w * 0.50f, h * 0.30f))
+            drawCircle(color = tint, radius = w * 0.065f, center = Offset(w * 0.65f, h * 0.38f))
+            drawCircle(color = tint, radius = w * 0.075f, center = Offset(w * 0.62f, h * 0.62f), style = Stroke(width = sw * 0.85f))
+        }
+    }
 }

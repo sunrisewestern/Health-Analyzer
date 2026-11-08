@@ -29,8 +29,18 @@ data class AthleteProfile(
     val bodyFatPercent: Float? = null,
     /** e.g. "Samsung Health, 2026-11-07" – where height/weight/etc. came from. */
     val importedFrom: String? = null,
+    /**
+     * Custom HR zones: the bpm where zones 2, 3, 4 and 5 start (e.g. copied from Samsung Health →
+     * Exercise settings → Heart rate zones). Used instead of % of max HR when [useCustomZones].
+     */
+    val customZoneStarts: List<Int> = emptyList(),
+    val useCustomZones: Boolean = false,
 ) {
     val age: Int? get() = birthDate?.let { ChronoUnit.YEARS.between(it, LocalDate.now()).toInt() }
+
+    /** The custom zone starts, if switched on and valid (4 rising values). */
+    val activeCustomZones: List<Int>? get() =
+        customZoneStarts.takeIf { useCustomZones && validZoneStarts(it) }
 
     companion object {
         private const val PREFS = "athlete_profile"
@@ -49,8 +59,13 @@ data class AthleteProfile(
                 weightKg = float("weightKg"),
                 bodyFatPercent = float("bodyFat"),
                 importedFrom = p.getString("importedFrom", null),
+                customZoneStarts = p.getString("zoneStarts", null).orEmpty()
+                    .split(',').mapNotNull { it.trim().toIntOrNull() },
+                useCustomZones = p.getBoolean("useCustomZones", false),
             )
         }
+
+        fun validZoneStarts(z: List<Int>) = z.size == 4 && z.all { it in 40..230 } && z.zipWithNext().all { (a, b) -> a < b }
 
         fun save(context: Context, profile: AthleteProfile) {
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
@@ -64,6 +79,8 @@ data class AthleteProfile(
                 .putFloat("weightKg", profile.weightKg ?: 0f)
                 .putFloat("bodyFat", profile.bodyFatPercent ?: 0f)
                 .putString("importedFrom", profile.importedFrom)
+                .putString("zoneStarts", profile.customZoneStarts.joinToString(","))
+                .putBoolean("useCustomZones", profile.useCustomZones)
                 .apply()
         }
     }
@@ -189,6 +206,9 @@ class PromptRenderer(private val context: Context, private val dao: RunDao) {
             },
         )
         p.restingHeartRate?.let { append("\nResting heart rate: $it bpm") }
+        p.activeCustomZones?.let { z ->
+            append("\nHeart-rate zones (set by athlete): Z1 <${z[0]} · Z2 ${z[0]}–${z[1] - 1} · Z3 ${z[1]}–${z[2] - 1} · Z4 ${z[2]}–${z[3] - 1} · Z5 ≥${z[3]} bpm")
+        }
         if (p.notes.isNotBlank()) append("\nNotes / goals: ${p.notes.trim()}")
     }
 
@@ -325,36 +345,10 @@ class PromptRenderer(private val context: Context, private val dao: RunDao) {
                     appendLine("$label | ${RunAnalysis.formatPace(s.paceSecPerKm)} | ${s.meanHeartRate.fmt0()} | ${s.meanCadence.fmt0()}")
                 }
             }
-            if (maxHr != null) {
-                zones(d.samples, maxHr)?.let { appendLine(); appendLine(it) }
-            }
+            HrZones.timeInZones(d.samples, AthleteProfile.load(context).activeCustomZones, maxHr)
+                ?.let { appendLine(); appendLine(it) }
             drift(d.samples)?.let { appendLine(); appendLine(it) }
         }.trimEnd()
-    }
-
-    /** Time in 5 zones by % of max HR, from the heart-rate rows. */
-    private fun zones(samples: List<Sample>, maxHr: Int): String? {
-        val hr = samples.filter { (it.hr ?: 0f) > 0 }.sortedBy { it.t }
-        if (hr.size < 2) return null
-        val secs = DoubleArray(5)
-        for (i in 1 until hr.size) {
-            val dt = (hr[i].t - hr[i - 1].t) / 1000.0
-            if (dt <= 0 || dt > 30) continue
-            val pct = hr[i].hr!! / maxHr
-            val z = when {
-                pct < 0.6 -> 0
-                pct < 0.7 -> 1
-                pct < 0.8 -> 2
-                pct < 0.9 -> 3
-                else -> 4
-            }
-            secs[z] += dt
-        }
-        val total = secs.sum().takeIf { it > 0 } ?: return null
-        val names = listOf("Z1 <60%", "Z2 60–70%", "Z3 70–80%", "Z4 80–90%", "Z5 ≥90%")
-        return "Time in HR zones (% of max HR $maxHr): " + names.indices.joinToString(" · ") { i ->
-            "${names[i]} ${RunAnalysis.formatDuration(secs[i].roundToInt().toLong())} (${(secs[i] / total * 100).roundToInt()}%)"
-        }
     }
 
     /** Aerobic decoupling: change in speed-per-heartbeat between the first and second half. */

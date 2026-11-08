@@ -14,13 +14,14 @@ import com.samsung.android.sdk.health.data.permission.Permission
 import com.samsung.android.sdk.health.data.request.DataType
 import com.samsung.android.sdk.health.data.request.DataTypes
 import com.samsung.android.sdk.health.data.request.InstantTimeFilter
-import com.samsung.android.sdk.health.data.request.LocalDateFilter
-import com.samsung.android.sdk.health.data.request.LocalDateGroup
-import com.samsung.android.sdk.health.data.request.LocalDateGroupUnit
+import com.healthanalyzer.app.data.HrReading
+import com.healthanalyzer.app.data.RestingHeartRate
+import com.samsung.android.sdk.health.data.request.LocalTimeFilter
 import com.samsung.android.sdk.health.data.request.Ordering
 import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
+import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 
 /** Athlete details found in Samsung Health. Any field can be missing. */
@@ -32,7 +33,7 @@ data class SamsungProfile(
     val weightKg: Float? = null,
     val bodyFatPercent: Float? = null,
     val bodyMeasuredOn: LocalDate? = null,
-    /** Median of daily minimum heart rate over the last days (an estimate of resting HR). */
+    /** Median over recent days of each day's lowest 30-minute average HR (an estimate of resting HR). */
     val restingHeartRate: Int? = null,
     val restingHeartRateDays: Int = 0,
 )
@@ -203,23 +204,43 @@ class SamsungHealthSource(context: Context) {
             }
         }
         if (Permission.of(DataTypes.HEART_RATE, AccessType.READ) in granted) {
-            val today = LocalDate.now()
-            val dailyMins = store.aggregateData(
-                DataType.HeartRateType.MIN.requestBuilder
-                    .setLocalDateFilterWithGroup(
-                        LocalDateFilter.of(today.minusDays(RESTING_HR_DAYS.toLong()), today.plusDays(1)),
-                        LocalDateGroup.of(LocalDateGroupUnit.DAILY, 1),
-                    )
-                    .build(),
-            ).dataList.mapNotNull { it.value?.takeIf { v -> v > 25 } }.sorted()
-            if (dailyMins.isNotEmpty()) {
-                profile = profile.copy(
-                    restingHeartRate = dailyMins[dailyMins.size / 2].toInt(),
-                    restingHeartRateDays = dailyMins.size,
-                )
+            RestingHeartRate.estimate(readHeartRate(RESTING_HR_DAYS))?.let {
+                profile = profile.copy(restingHeartRate = it.bpm, restingHeartRateDays = it.days)
             }
         }
         return profile
+    }
+
+    /**
+     * All-day heart-rate readings for the last [days] full days (today excluded: it is partial).
+     * Watch data usually arrives as binned points with a per-minute series inside; use the series
+     * when present, otherwise the point's own average.
+     */
+    private suspend fun readHeartRate(days: Int): List<HrReading> {
+        val today = LocalDate.now().atStartOfDay()
+        val readings = mutableListOf<HrReading>()
+        var pageToken: String? = null
+        do {
+            val builder = DataTypes.HEART_RATE.readDataRequestBuilder
+                .setLocalTimeFilter(LocalTimeFilter.of(today.minusDays(days.toLong()), today))
+                .setOrdering(Ordering.ASC)
+                .setPageSize(HR_PAGE_SIZE)
+            pageToken?.let { builder.setPageToken(it) }
+            val response = store.readData(builder.build())
+            response.dataList.forEach { point ->
+                val offset = point.zoneOffset ?: ZoneOffset.UTC
+                val series = point.getValue(DataType.HeartRateType.SERIES_DATA).orEmpty()
+                if (series.isNotEmpty()) {
+                    series.forEach { readings += HrReading(it.startTime.atOffset(offset).toLocalDateTime(), it.heartRate) }
+                } else {
+                    point.getValue(DataType.HeartRateType.HEART_RATE)?.let {
+                        readings += HrReading(point.startTime.atOffset(offset).toLocalDateTime(), it)
+                    }
+                }
+            }
+            pageToken = response.pageToken
+        } while (!pageToken.isNullOrEmpty())
+        return readings
     }
 
     /** Samsung returns the birth date as a string; accept yyyyMMdd and ISO yyyy-MM-dd. */
@@ -234,6 +255,7 @@ class SamsungHealthSource(context: Context) {
     companion object {
         private const val PAGE_SIZE = 5
         private const val RESTING_HR_DAYS = 14
+        private const val HR_PAGE_SIZE = 1000
 
         val RUNNING_TYPES = setOf(
             DataType.ExerciseType.PredefinedExerciseType.RUNNING,

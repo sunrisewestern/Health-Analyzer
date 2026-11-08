@@ -152,7 +152,7 @@ private fun AnalyzePane(vm: AiViewModel, onOpenSettings: () -> Unit) {
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                         Button(
-                            onClick = onOpenSettings,
+                            onClick = { vm.navigateToSettings("ai"); onOpenSettings() },
                             shape = RoundedCornerShape(10.dp),
                         ) {
                             Text("Configure in Settings")

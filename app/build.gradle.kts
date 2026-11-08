@@ -14,8 +14,8 @@ android {
         applicationId = "com.healthanalyzer.app"
         minSdk = 29 // Samsung Health Data SDK requires Android 10+
         targetSdk = 36
-        versionCode = 2
-        versionName = "1.0.0"
+        versionCode = 3
+        versionName = "1.1.0"
     }
 
     // Release signing: the keystore and passwords live in ~/.gradle/gradle.properties
@@ -33,6 +33,11 @@ android {
     }
 
     buildTypes {
+        debug {
+            // Own package (.dev) so debug installs next to the release app (separate data and signature).
+            applicationIdSuffix = ".dev"
+            versionNameSuffix = "-dev"
+        }
         release {
             isMinifyEnabled = false
             // Without the properties (e.g. another machine) the release build is left unsigned.

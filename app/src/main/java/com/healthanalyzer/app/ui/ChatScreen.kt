@@ -92,7 +92,7 @@ private fun ChatList(vm: AiViewModel, onOpenSettings: () -> Unit) {
         }
         if (providers.isEmpty()) {
             item {
-                TextButton(onClick = onOpenSettings) { Text("Add an AI provider in Settings to start chatting →") }
+                TextButton(onClick = { vm.navigateToSettings("ai"); onOpenSettings() }) { Text("Add an AI provider in Settings to start chatting →") }
             }
         }
         if (chats.isEmpty() && providers.isNotEmpty()) {

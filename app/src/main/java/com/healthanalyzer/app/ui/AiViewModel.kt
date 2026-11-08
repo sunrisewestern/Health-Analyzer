@@ -18,6 +18,7 @@ import com.healthanalyzer.app.ai.LlmConfig
 import com.healthanalyzer.app.ai.PromptRenderer
 import com.healthanalyzer.app.ai.PromptTemplateEntity
 import com.healthanalyzer.app.data.RunEntity
+import com.healthanalyzer.app.ui.theme.ThemeConfig
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -85,11 +86,23 @@ class AiViewModel(app: Application) : AndroidViewModel(app) {
     private val _profile = MutableStateFlow(AthleteProfile.load(app))
     val profile: StateFlow<AthleteProfile> = _profile.asStateFlow()
 
+    /** Bumped whenever the stored profile is replaced, so the editor drops unsaved field edits. */
+    private val _profileRevision = MutableStateFlow(0)
+    val profileRevision: StateFlow<Int> = _profileRevision.asStateFlow()
+
     private val _models = MutableStateFlow<List<String>>(emptyList())
     val models: StateFlow<List<String>> = _models.asStateFlow()
 
     private val _settingsMessage = MutableStateFlow<String?>(null)
     val settingsMessage: StateFlow<String?> = _settingsMessage.asStateFlow()
+
+    private val _targetSettingsSection = MutableStateFlow<String?>(null)
+    val targetSettingsSection: StateFlow<String?> = _targetSettingsSection.asStateFlow()
+    fun navigateToSettings(section: String? = null) { _targetSettingsSection.value = section }
+    fun clearTargetSettingsSection() { _targetSettingsSection.value = null }
+
+    private val _themeConfig = MutableStateFlow(ThemeConfig.load(app))
+    val themeConfig: StateFlow<ThemeConfig> = _themeConfig.asStateFlow()
 
     private val _baseline = MutableStateFlow(Baseline.load(app))
     val baseline: StateFlow<Baseline?> = _baseline.asStateFlow()
@@ -417,7 +430,7 @@ class AiViewModel(app: Application) : AndroidViewModel(app) {
                 s.heightCm?.let { "height" },
                 s.weightKg?.let { "weight" },
                 s.bodyFatPercent?.let { "body fat (${s.bodyMeasuredOn})" },
-                s.restingHeartRate?.let { "resting HR ≈ $it (median daily low, ${s.restingHeartRateDays} days)" },
+                s.restingHeartRate?.let { "resting HR ≈ $it (lowest 30-min average, median of ${s.restingHeartRateDays} days)" },
             )
             _settingsMessage.value = if (found.isEmpty()) "Samsung Health had no profile data to import."
             else "Imported from Samsung Health: ${found.joinToString(", ")}"
@@ -545,7 +558,13 @@ class AiViewModel(app: Application) : AndroidViewModel(app) {
     fun saveProfile(p: AthleteProfile) {
         AthleteProfile.save(getApplication(), p)
         _profile.value = p
+        _profileRevision.value++
         _settingsMessage.value = "Profile saved"
+    }
+
+    fun saveThemeConfig(config: ThemeConfig) {
+        ThemeConfig.save(getApplication(), config)
+        _themeConfig.value = config
     }
 
     fun dismissSettingsMessage() { _settingsMessage.value = null }
@@ -554,8 +573,10 @@ class AiViewModel(app: Application) : AndroidViewModel(app) {
     fun reloadFromStorage() {
         val app = getApplication<Application>()
         _profile.value = AthleteProfile.load(app)
+        _profileRevision.value++
         _baseline.value = Baseline.load(app)
         _useBaseline.value = Baseline.useInAnalyses(app)
+        _themeConfig.value = ThemeConfig.load(app)
     }
 
     private fun AiProviderEntity.toConfig() = LlmConfig(

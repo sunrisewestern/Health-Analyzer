@@ -8,7 +8,9 @@ import com.google.gson.JsonArray
 import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
@@ -20,6 +22,8 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
+import java.io.IOException
+import java.io.InterruptedIOException
 import java.time.Duration
 import java.util.concurrent.TimeUnit
 
@@ -30,6 +34,7 @@ data class LlmConfig(
     val apiKey: String,
     val model: String,
     val maxTokens: Int,
+    val thinkingLevel: ThinkingLevel = ThinkingLevel.DEFAULT,
     /** Called with new credentials when a client refreshes them (ChatGPT sign-in). */
     val onCredentialsRefreshed: (suspend (String) -> Unit)? = null,
 )
@@ -64,14 +69,70 @@ object LlmClients {
     val http = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(10, TimeUnit.MINUTES) // reasoning models can think for a long time
+        // HTTP/2 pings keep the socket alive through NATs/carrier proxies while a model thinks
+        // silently for minutes, and detect a dead connection instead of waiting out the read timeout.
+        .pingInterval(20, TimeUnit.SECONDS)
+        .retryOnConnectionFailure(true)
         .build()
 
-    fun forProtocol(p: Protocol): LlmClient = when (p) {
-        Protocol.OPENAI -> OpenAiCompatibleClient(http)
-        Protocol.ANTHROPIC -> AnthropicClient
-        Protocol.GEMINI -> GeminiClient(http)
-        Protocol.CHATGPT -> ChatGptCodexClient(http)
+    fun forProtocol(p: Protocol): LlmClient = ResilientClient(
+        when (p) {
+            Protocol.OPENAI -> OpenAiCompatibleClient(http)
+            Protocol.ANTHROPIC -> AnthropicClient
+            Protocol.GEMINI -> GeminiClient(http)
+            Protocol.CHATGPT -> ChatGptCodexClient(http)
+        },
+    )
+}
+
+/**
+ * True for socket-level failures worth retrying: "Software caused connection abort",
+ * "Connection reset", a broken pipe, an HTTP/2 stream reset… Timeouts are left out
+ * (each one already waited minutes), and so are our own [LlmException]s (HTTP errors).
+ */
+internal fun Throwable.isTransientNetworkError(): Boolean =
+    generateSequence(this) { it.cause }.take(8).any { it is IOException && it !is InterruptedIOException }
+
+/**
+ * Wraps a client so a dropped connection is retried while nothing has been streamed yet
+ * (a stale pooled connection after the phone slept, a Wi-Fi ↔ mobile switch), and so a
+ * drop mid-answer surfaces as a readable [NetworkException] instead of a raw socket error.
+ */
+private class ResilientClient(private val base: LlmClient) : LlmClient {
+    override fun chat(config: LlmConfig, system: String, turns: List<ChatTurn>): Flow<String> =
+        base.chat(config, system, turns).retryBeforeFirstToken()
+
+    override fun stream(config: LlmConfig, system: String, user: String): Flow<String> =
+        base.stream(config, system, user).retryBeforeFirstToken()
+
+    override suspend fun listModels(config: LlmConfig): List<String> = base.listModels(config)
+}
+
+internal fun Flow<String>.retryBeforeFirstToken(retries: Int = 2, backoffMs: Long = 1500): Flow<String> = flow {
+    var attempt = 0
+    while (true) {
+        var emitted = false
+        try {
+            collect { emitted = true; emit(it) }
+            return@flow
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            if (!e.isTransientNetworkError()) throw e
+            if (emitted || attempt >= retries) throw NetworkException(connectionDroppedMessage(e, emitted))
+            attempt++
+            // Dead sockets may still sit in the pool; make the retry open a fresh one.
+            runCatching { LlmClients.http.connectionPool.evictAll() }
+            delay(backoffMs * attempt)
+        }
     }
+}
+
+private fun connectionDroppedMessage(e: Throwable, partial: Boolean): String {
+    val root = generateSequence(e) { it.cause }.last()
+    val what = if (partial) "The connection dropped before the answer finished" else "The connection to the AI provider dropped"
+    return "$what (${root.message ?: root.javaClass.simpleName}). This happens when the network changes " +
+        "(Wi-Fi ↔ mobile data, VPN reconnecting) or a battery saver cuts off the app. Tap Retry."
 }
 
 private val JSON = "application/json".toMediaType()
@@ -122,6 +183,9 @@ private class OpenAiCompatibleClient(private val http: OkHttpClient) : LlmClient
             addProperty("model", config.model)
             add("messages", messages)
             addProperty("stream", true)
+            if (config.thinkingLevel != ThinkingLevel.DEFAULT && config.thinkingLevel != ThinkingLevel.OFF) {
+                config.thinkingLevel.apiValue?.let { addProperty("reasoning_effort", it) }
+            }
         }
         val request = Request.Builder()
             .url(config.baseUrl.trimSlash() + "/chat/completions")
@@ -203,7 +267,34 @@ private class GeminiClient(private val http: OkHttpClient) : LlmClient {
                     })
                 }
             })
-            add("generationConfig", JsonObject().apply { addProperty("maxOutputTokens", config.maxTokens) })
+            val genConfig = JsonObject().apply {
+                addProperty("maxOutputTokens", config.maxTokens)
+                when (config.thinkingLevel) {
+                    ThinkingLevel.DEFAULT -> {}
+                    ThinkingLevel.OFF -> {
+                        add("thinkingConfig", JsonObject().apply {
+                            addProperty("thinkingBudget", 0)
+                        })
+                    }
+                    ThinkingLevel.LOW, ThinkingLevel.MEDIUM, ThinkingLevel.HIGH -> {
+                        val isGemini3 = config.model.contains("gemini-3") || config.model.contains("gemini-3.")
+                        add("thinkingConfig", JsonObject().apply {
+                            if (isGemini3) {
+                                addProperty("thinkingLevel", config.thinkingLevel.name)
+                            } else {
+                                val budget = when (config.thinkingLevel) {
+                                    ThinkingLevel.LOW -> 1024
+                                    ThinkingLevel.MEDIUM -> 8192
+                                    ThinkingLevel.HIGH -> 16384
+                                    else -> 8192
+                                }
+                                addProperty("thinkingBudget", budget)
+                            }
+                        })
+                    }
+                }
+            }
+            add("generationConfig", genConfig)
         }
         val model = config.model.removePrefix("models/")
         val request = Request.Builder()
@@ -276,6 +367,24 @@ private object AnthropicClient : LlmClient {
                 if (wantsFallback(config)) {
                     putAdditionalHeader("anthropic-beta", "server-side-fallback-2026-07-01")
                     putAdditionalBodyProperty("fallbacks", JsonValue.from("default"))
+                }
+                when (config.thinkingLevel) {
+                    ThinkingLevel.DEFAULT, ThinkingLevel.OFF -> {}
+                    ThinkingLevel.LOW, ThinkingLevel.MEDIUM, ThinkingLevel.HIGH -> {
+                        val minRequired = 1024
+                        if (config.maxTokens > minRequired) {
+                            val budget = when (config.thinkingLevel) {
+                                ThinkingLevel.LOW -> 2048
+                                ThinkingLevel.MEDIUM -> 8192
+                                ThinkingLevel.HIGH -> 16384
+                                else -> 8192
+                            }.coerceIn(minRequired, config.maxTokens - 1)
+                            putAdditionalBodyProperty(
+                                "thinking",
+                                JsonValue.from(mapOf("type" to "enabled", "budget_tokens" to budget)),
+                            )
+                        }
+                    }
                 }
             }
             .build()

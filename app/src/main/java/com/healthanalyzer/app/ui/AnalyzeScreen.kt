@@ -19,6 +19,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -79,6 +80,8 @@ private fun AnalyzePane(vm: AiViewModel, onOpenSettings: () -> Unit) {
     val useBaseline by vm.useBaseline.collectAsStateWithLifecycle()
     var showPrompt by rememberSaveable { mutableStateOf(false) }
     var resultExpanded by rememberSaveable { mutableStateOf(true) }
+    var analysisToDelete by remember { mutableStateOf<AnalysisEntity?>(null) }
+    var confirmClearAllAnalyses by remember { mutableStateOf(false) }
     val clipboard = LocalClipboardManager.current
     val analyzeListState = rememberLazyListState()
 
@@ -192,7 +195,10 @@ private fun AnalyzePane(vm: AiViewModel, onOpenSettings: () -> Unit) {
                         label = "AI Model Provider",
                         selected = provider,
                         options = providers,
-                        display = { "${it.name} (${it.model.ifBlank { it.protocol.label }})" },
+                        display = {
+                            val thinking = if (it.thinkingLevel != com.healthanalyzer.app.ai.ThinkingLevel.DEFAULT) " · ${it.thinkingLevel.label}" else ""
+                            "${it.name} (${it.model.ifBlank { it.protocol.label }}$thinking)"
+                        },
                         onSelect = { vm.select(providerId = it.id) },
                     )
 
@@ -323,12 +329,19 @@ private fun AnalyzePane(vm: AiViewModel, onOpenSettings: () -> Unit) {
                     shape = RoundedCornerShape(12.dp),
                     modifier = Modifier.fillMaxWidth(),
                 ) {
-                    Text(
-                        "Error: $err",
-                        color = MaterialTheme.colorScheme.error,
-                        style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier.padding(12.dp),
-                    )
+                    Column(Modifier.padding(start = 12.dp, top = 12.dp, end = 4.dp, bottom = 4.dp)) {
+                        Text(
+                            "Error: $err",
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.padding(end = 8.dp),
+                        )
+                        if (!state.running) {
+                            TextButton(onClick = { vm.start() }, modifier = Modifier.align(Alignment.End)) {
+                                Text("Retry")
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -421,15 +434,13 @@ private fun AnalyzePane(vm: AiViewModel, onOpenSettings: () -> Unit) {
                     horizontalArrangement = Arrangement.SpaceBetween,
                 ) {
                     Text(
-                        "Analysis History",
+                        "Analysis History (${history.size})",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold,
                     )
-                    Text(
-                        "${history.size} reports",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                    TextButton(onClick = { confirmClearAllAnalyses = true }) {
+                        Text("Clear All", color = MaterialTheme.colorScheme.error)
+                    }
                 }
             }
 
@@ -453,6 +464,7 @@ private fun AnalyzePane(vm: AiViewModel, onOpenSettings: () -> Unit) {
                                 a.promptName,
                                 fontWeight = FontWeight.Bold,
                                 style = MaterialTheme.typography.bodyMedium,
+                                modifier = Modifier.weight(1f),
                             )
                             StatusBadge(
                                 text = "${a.providerName} · ${a.model}",
@@ -461,14 +473,27 @@ private fun AnalyzePane(vm: AiViewModel, onOpenSettings: () -> Unit) {
                             )
                         }
 
-                        Text(
-                            listOfNotNull(
-                                DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(a.createdEpochMs)),
-                                a.runLabel,
-                            ).joinToString("  ·  "),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                        ) {
+                            Text(
+                                listOfNotNull(
+                                    DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(a.createdEpochMs)),
+                                    a.runLabel,
+                                ).joinToString("  ·  "),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.weight(1f),
+                            )
+                            TextButton(
+                                onClick = { analysisToDelete = a },
+                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
+                            ) {
+                                Text("Delete", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelSmall)
+                            }
+                        }
 
                         if (a.error != null) {
                             Text(
@@ -482,6 +507,58 @@ private fun AnalyzePane(vm: AiViewModel, onOpenSettings: () -> Unit) {
             }
         }
     }
+
+    analysisToDelete?.let { target ->
+        AlertDialog(
+            onDismissRequest = { analysisToDelete = null },
+            title = { Text("Delete analysis?") },
+            text = {
+                Text("Are you sure you want to delete this saved analysis (\"${target.promptName}\")? This cannot be undone.")
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        vm.deleteAnalysis(target)
+                        analysisToDelete = null
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                ) {
+                    Text("Delete")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { analysisToDelete = null }) {
+                    Text("Cancel")
+                }
+            },
+        )
+    }
+
+    if (confirmClearAllAnalyses) {
+        AlertDialog(
+            onDismissRequest = { confirmClearAllAnalyses = false },
+            title = { Text("Delete all past analyses?") },
+            text = {
+                Text("Are you sure you want to delete all ${history.size} saved analyses? This cannot be undone.")
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        confirmClearAllAnalyses = false
+                        vm.clearAllAnalyses()
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                ) {
+                    Text("Delete all")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmClearAllAnalyses = false }) {
+                    Text("Cancel")
+                }
+            },
+        )
+    }
 }
 
 @Composable
@@ -493,7 +570,34 @@ private fun SavedAnalysisView(
     onChat: () -> Unit,
 ) {
     var showPrompt by rememberSaveable { mutableStateOf(false) }
+    var confirmDelete by remember { mutableStateOf(false) }
     val clipboard = LocalClipboardManager.current
+
+    if (confirmDelete) {
+        AlertDialog(
+            onDismissRequest = { confirmDelete = false },
+            title = { Text("Delete analysis?") },
+            text = {
+                Text("Are you sure you want to delete this saved analysis (\"${a.promptName}\")? This cannot be undone.")
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        confirmDelete = false
+                        onDelete()
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                ) {
+                    Text("Delete")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmDelete = false }) {
+                    Text("Cancel")
+                }
+            },
+        )
+    }
 
     LazyColumn(
         contentPadding = PaddingValues(16.dp),
@@ -523,7 +627,7 @@ private fun SavedAnalysisView(
                     TextButton(onClick = { clipboard.setText(AnnotatedString(a.output)) }) {
                         Text("Copy 📋")
                     }
-                    TextButton(onClick = onDelete) {
+                    TextButton(onClick = { confirmDelete = true }) {
                         Text("Delete", color = MaterialTheme.colorScheme.error)
                     }
                 }

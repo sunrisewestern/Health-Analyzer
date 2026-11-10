@@ -23,6 +23,33 @@ import androidx.compose.ui.unit.dp
 object AppIcons {
 
     @Composable
+    fun Calendar(
+        modifier: Modifier = Modifier.size(24.dp),
+        tint: Color = LocalContentColor.current,
+        strokeWidth: Dp = 2.dp,
+    ) {
+        Canvas(modifier = modifier) {
+            val sw = strokeWidth.toPx()
+            val w = size.width
+            val h = size.height
+            drawRoundRect(
+                color = tint,
+                topLeft = Offset(w * 0.14f, h * 0.20f),
+                size = Size(w * 0.72f, h * 0.66f),
+                cornerRadius = CornerRadius(w * 0.12f),
+                style = Stroke(width = sw),
+            )
+            drawLine(tint, Offset(w * 0.14f, h * 0.42f), Offset(w * 0.86f, h * 0.42f), strokeWidth = sw)
+            drawLine(tint, Offset(w * 0.34f, h * 0.10f), Offset(w * 0.34f, h * 0.28f), strokeWidth = sw, cap = StrokeCap.Round)
+            drawLine(tint, Offset(w * 0.66f, h * 0.10f), Offset(w * 0.66f, h * 0.28f), strokeWidth = sw, cap = StrokeCap.Round)
+            val dot = sw * 0.75f
+            drawCircle(tint, dot, Offset(w * 0.36f, h * 0.58f))
+            drawCircle(tint, dot, Offset(w * 0.64f, h * 0.58f))
+            drawCircle(tint, dot, Offset(w * 0.36f, h * 0.73f))
+        }
+    }
+
+    @Composable
     fun Runner(
         modifier: Modifier = Modifier.size(24.dp),
         tint: Color = LocalContentColor.current,

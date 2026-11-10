@@ -50,6 +50,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
         // The Samsung Health Data SDK AAR ships data-binding classes.
         dataBinding = true
     }

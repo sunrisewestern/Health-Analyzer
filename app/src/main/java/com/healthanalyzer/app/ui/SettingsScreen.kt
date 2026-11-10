@@ -100,6 +100,7 @@ enum class SettingsLayer {
     DATA_INTEGRATIONS,
     BACKUP_RESTORE,
     SETUP_GUIDES,
+    TRAINING_PLAN,
 }
 
 @Composable
@@ -130,6 +131,7 @@ fun SettingsScreen(vm: AiViewModel, activity: Activity, runsVm: RunsViewModel) {
     val dataListState = rememberLazyListState()
     val backupListState = rememberLazyListState()
     val guidesListState = rememberLazyListState()
+    val planListState = rememberLazyListState()
 
     // Respond to deep-link requests (e.g. from AnalyzeScreen: "Add an AI provider in Settings")
     LaunchedEffect(targetSection) {
@@ -255,6 +257,11 @@ fun SettingsScreen(vm: AiViewModel, activity: Activity, runsVm: RunsViewModel) {
                     listState = guidesListState,
                     onBack = { currentLayer = SettingsLayer.HUB },
                 )
+                SettingsLayer.TRAINING_PLAN -> TrainingPlanSubScreen(
+                    vm = vm,
+                    listState = planListState,
+                    onBack = { currentLayer = SettingsLayer.HUB },
+                )
                 SettingsLayer.HUB -> Unit
             }
         }
@@ -267,6 +274,7 @@ fun SettingsScreen(vm: AiViewModel, activity: Activity, runsVm: RunsViewModel) {
                 themeConfig = themeConfig,
                 runsVm = runsVm,
                 listState = hubListState,
+                recapEnabled = vm.recapSettings.collectAsStateWithLifecycle().value.enabled,
                 onNavigate = { currentLayer = it },
             )
         }
@@ -285,6 +293,7 @@ private fun SettingsHubScreen(
     themeConfig: ThemeConfig,
     runsVm: RunsViewModel,
     listState: LazyListState,
+    recapEnabled: Boolean,
     onNavigate: (SettingsLayer) -> Unit,
 ) {
     val runsState by runsVm.state.collectAsStateWithLifecycle()
@@ -395,6 +404,16 @@ private fun SettingsHubScreen(
         }
         item {
             CategoryTile(
+                title = "Training Plan",
+                subtitle = "Today's coach briefing on the Plan tab and the weather location it uses",
+                badgeText = if (recapEnabled) "Today's recap on" else "Today's recap off",
+                icon = { AppIcons.Calendar(modifier = Modifier.size(22.dp), tint = MaterialTheme.colorScheme.primary) },
+                iconBackground = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f),
+                onClick = { onNavigate(SettingsLayer.TRAINING_PLAN) },
+            )
+        }
+        item {
+            CategoryTile(
                 title = "Theme & Appearance",
                 subtitle = "Dark/Light display mode, curated athletic color presets, and custom palette",
                 badgeText = "${themeConfig.preset.title} · ${themeConfig.mode.label}",
@@ -441,13 +460,18 @@ private fun SettingsHubScreen(
         }
 
         item {
+            val updateVm: com.healthanalyzer.app.update.UpdateViewModel = androidx.lifecycle.viewmodel.compose.viewModel()
+            com.healthanalyzer.app.update.UpdateSettingsCard(updateVm)
+        }
+
+        item {
             Spacer(Modifier.height(10.dp))
             Column(
                 modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 Text(
-                    "HealthAnalyzer v1.2.0",
+                    "HealthAnalyzer v${com.healthanalyzer.app.BuildConfig.VERSION_NAME}",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
                     fontWeight = FontWeight.Medium,
@@ -587,6 +611,90 @@ private fun SubScreenHeader(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(start = 48.dp),
             )
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// LAYER 2: TRAINING PLAN
+// -----------------------------------------------------------------------------
+
+@Composable
+private fun TrainingPlanSubScreen(vm: AiViewModel, listState: LazyListState, onBack: () -> Unit) {
+    val settings by vm.recapSettings.collectAsStateWithLifecycle()
+    val searching by vm.placeSearching.collectAsStateWithLifecycle()
+    var city by rememberSaveable(settings.place?.name) { mutableStateOf(settings.place?.name?.substringBefore(',').orEmpty()) }
+
+    LazyColumn(
+        state = listState,
+        contentPadding = PaddingValues(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 120.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        item {
+            SubScreenHeader(
+                title = "Training Plan",
+                subtitle = "Options for the Plan tab.",
+                onBack = onBack,
+            )
+        }
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
+            ) {
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Today's recap", fontWeight = FontWeight.SemiBold)
+                            Text(
+                                "A card at the top of the Plan tab with today's workout, the weather and a short AI coach " +
+                                    "briefing (when to run, what to wear, pace adjustments). Written once a day with your " +
+                                    "first AI provider, and again when today's plan changes.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        Switch(checked = settings.enabled, onCheckedChange = vm::setRecapEnabled)
+                    }
+                    if (settings.enabled) {
+                        OutlinedTextField(
+                            value = city,
+                            onValueChange = { city = it },
+                            label = { Text("City for the weather") },
+                            placeholder = { Text("e.g. Toronto") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(
+                                onClick = { vm.setRecapCity(city) },
+                                enabled = !searching,
+                                shape = RoundedCornerShape(10.dp),
+                            ) { Text(if (searching) "Looking up…" else "Save location") }
+                            if (settings.place != null) {
+                                TextButton(onClick = { city = ""; vm.setRecapCity("") }) {
+                                    Text("Remove", color = MaterialTheme.colorScheme.error)
+                                }
+                            }
+                        }
+                        Text(
+                            settings.place?.let { "Using ${it.name} (%.2f, %.2f).".format(it.lat, it.lon) }
+                                ?: "No location – the recap leaves the weather out.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Text(
+                            "The forecast comes from Open-Meteo (free, no account); only the city's coordinates are sent there. " +
+                                "The AI model reads the forecast – it doesn't look up the weather itself.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
         }
     }
 }
@@ -791,7 +899,7 @@ private fun AiConfigSubScreen(
                                     )
                                 }
                                 Text(
-                                    "Model: ${p.model.ifBlank { "Not set" }}\n${p.baseUrl}",
+                                    "Model: ${p.model.ifBlank { "Not set" }}${if (p.thinkingLevel != com.healthanalyzer.app.ai.ThinkingLevel.DEFAULT) " · ${p.thinkingLevel.label} Thinking" else ""}\n${p.baseUrl}",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
@@ -1465,6 +1573,7 @@ private fun ProviderEditor(vm: AiViewModel, initial: ProviderForm, onDone: () ->
                         protocol = preset.protocol,
                         baseUrl = preset.baseUrl,
                         model = preset.defaultModel,
+                        thinkingLevel = preset.defaultThinkingLevel,
                     )
                     vm.clearModels()
                 })
@@ -1541,6 +1650,21 @@ private fun ProviderEditor(vm: AiViewModel, initial: ProviderForm, onDone: () ->
                 shape = RoundedCornerShape(12.dp),
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
+            )
+        }
+        item {
+            Picker(
+                label = "Thinking Level",
+                selected = form.thinkingLevel,
+                options = com.healthanalyzer.app.ai.ThinkingLevel.entries,
+                display = { "${it.label} — ${it.description}" },
+                onSelect = { form = form.copy(thinkingLevel = it) },
+            )
+            Text(
+                "Sets reasoning effort or thinking budget for reasoning models (OpenAI o-series, Gemini 2.5/3, Claude 3.7, DeepSeek). Default lets the model decide.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 4.dp, top = 2.dp),
             )
         }
         item {

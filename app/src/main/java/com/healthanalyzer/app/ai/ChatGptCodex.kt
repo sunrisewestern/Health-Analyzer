@@ -248,6 +248,9 @@ internal class ChatGptCodexClient(private val http: OkHttpClient) : LlmClient {
             })
             addProperty("stream", true)
             addProperty("store", false)
+            if (config.thinkingLevel != ThinkingLevel.DEFAULT && config.thinkingLevel != ThinkingLevel.OFF) {
+                config.thinkingLevel.apiValue?.let { addProperty("reasoning_effort", it) }
+            }
         }.toString()
 
         var t = tokens(config)

@@ -22,6 +22,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
@@ -71,6 +72,9 @@ fun ChatPane(vm: AiViewModel, onOpenSettings: () -> Unit) {
 private fun ChatList(vm: AiViewModel, onOpenSettings: () -> Unit) {
     val chats by vm.chats.collectAsStateWithLifecycle()
     val providers by vm.providers.collectAsStateWithLifecycle()
+    var chatToDelete by remember { mutableStateOf<ChatEntity?>(null) }
+    var confirmClearAll by remember { mutableStateOf(false) }
+
     LazyColumn(
         contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 16.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -106,6 +110,24 @@ private fun ChatList(vm: AiViewModel, onOpenSettings: () -> Unit) {
                 )
             }
         }
+        if (chats.isNotEmpty()) {
+            item {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Text(
+                        "Conversations (${chats.size})",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    TextButton(onClick = { confirmClearAll = true }) {
+                        Text("Clear All", color = MaterialTheme.colorScheme.error)
+                    }
+                }
+            }
+        }
         items(chats, key = { it.id }) { c ->
             Card(
                 modifier = Modifier.fillMaxWidth().clickable { vm.openChat(c.id) },
@@ -124,10 +146,62 @@ private fun ChatList(vm: AiViewModel, onOpenSettings: () -> Unit) {
                             overflow = TextOverflow.Ellipsis,
                         )
                     }
-                    TextButton(onClick = { vm.deleteChat(c.id) }) { Text("Delete", color = MaterialTheme.colorScheme.error) }
+                    TextButton(onClick = { chatToDelete = c }) { Text("Delete", color = MaterialTheme.colorScheme.error) }
                 }
             }
         }
+    }
+
+    chatToDelete?.let { chat ->
+        AlertDialog(
+            onDismissRequest = { chatToDelete = null },
+            title = { Text("Delete conversation?") },
+            text = {
+                Text("Delete \"${chat.title}\" and all of its messages? This cannot be undone.")
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        vm.deleteChat(chat.id)
+                        chatToDelete = null
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                ) {
+                    Text("Delete")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { chatToDelete = null }) {
+                    Text("Cancel")
+                }
+            },
+        )
+    }
+
+    if (confirmClearAll) {
+        AlertDialog(
+            onDismissRequest = { confirmClearAll = false },
+            title = { Text("Delete all conversations?") },
+            text = {
+                Text("Are you sure you want to delete all ${chats.size} conversations and their messages? This cannot be undone.")
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        confirmClearAll = false
+                        vm.clearAllChats()
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                ) {
+                    Text("Delete all")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmClearAll = false }) {
+                    Text("Cancel")
+                }
+            },
+        )
     }
 }
 
@@ -157,6 +231,7 @@ private fun ChatConversation(vm: AiViewModel) {
     val busy = live != null
     var draft by rememberSaveable(c.id) { mutableStateOf("") }
     var showContext by remember { mutableStateOf(false) }
+    var confirmDeleteChat by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
     val provider = providers.firstOrNull { it.id == c.providerId } ?: providers.firstOrNull()
 
@@ -164,6 +239,32 @@ private fun ChatConversation(vm: AiViewModel) {
     val itemCount = messages.size + (if (liveText != null) 1 else 0)
     LaunchedEffect(itemCount, liveText?.length) {
         if (itemCount > 0) listState.scrollToItem(itemCount - 1, Int.MAX_VALUE / 2)
+    }
+
+    if (confirmDeleteChat) {
+        AlertDialog(
+            onDismissRequest = { confirmDeleteChat = false },
+            title = { Text("Delete conversation?") },
+            text = {
+                Text("Delete \"${c.title}\" and all of its messages? This cannot be undone.")
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        confirmDeleteChat = false
+                        vm.deleteChat(c.id)
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                ) {
+                    Text("Delete")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmDeleteChat = false }) {
+                    Text("Cancel")
+                }
+            },
+        )
     }
 
     Column(Modifier.fillMaxSize().imePadding()) {
@@ -182,7 +283,10 @@ private fun ChatConversation(vm: AiViewModel) {
             Column(Modifier.weight(1f).padding(horizontal = 10.dp)) {
                 Text(c.title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(
-                    provider?.let { "${it.name} · ${it.model}" } ?: "No provider",
+                    provider?.let {
+                        val thinking = if (it.thinkingLevel != com.healthanalyzer.app.ai.ThinkingLevel.DEFAULT) " · ${it.thinkingLevel.label}" else ""
+                        "${it.name} · ${it.model}$thinking"
+                    } ?: "No provider",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
@@ -190,6 +294,9 @@ private fun ChatConversation(vm: AiViewModel) {
                 )
             }
             TextButton(onClick = { showContext = true }) { Text("Context") }
+            TextButton(onClick = { confirmDeleteChat = true }) {
+                Text("Delete", color = MaterialTheme.colorScheme.error)
+            }
         }
         // What the coach knows
         Surface(
@@ -345,7 +452,10 @@ private fun ContextDialog(vm: AiViewModel, chat: ChatEntity, onDismiss: () -> Un
                         label = "AI provider",
                         selected = providers.firstOrNull { it.id == c.providerId } ?: providers.firstOrNull(),
                         options = providers,
-                        display = { "${it.name} (${it.model})" },
+                        display = {
+                            val thinking = if (it.thinkingLevel != com.healthanalyzer.app.ai.ThinkingLevel.DEFAULT) " · ${it.thinkingLevel.label}" else ""
+                            "${it.name} (${it.model}$thinking)"
+                        },
                         onSelect = { c = c.copy(providerId = it.id) },
                     )
                 }

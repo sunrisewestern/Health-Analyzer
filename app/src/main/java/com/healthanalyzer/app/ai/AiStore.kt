@@ -25,6 +25,18 @@ enum class Protocol(val label: String) {
     CHATGPT("ChatGPT sign-in (Codex)"),
 }
 
+/**
+ * Reasoning/thinking effort sent to models with extended thinking capabilities
+ * (OpenAI o-series, Gemini 2.5/3, Claude 3.7, DeepSeek reasoner, etc.).
+ */
+enum class ThinkingLevel(val label: String, val apiValue: String?, val description: String) {
+    DEFAULT("Default", null, "Model decides / unchanged"),
+    OFF("Off", "off", "Disable thinking where supported"),
+    LOW("Low", "low", "Fast, minimal reasoning tokens"),
+    MEDIUM("Medium", "medium", "Balanced reasoning effort"),
+    HIGH("High", "high", "Deep thinking, max reasoning tokens");
+}
+
 /** Ready-made endpoint settings; everything stays editable after picking one. */
 data class ProviderPreset(
     val name: String,
@@ -32,6 +44,7 @@ data class ProviderPreset(
     val baseUrl: String,
     val defaultModel: String = "",
     val needsKey: Boolean = true,
+    val defaultThinkingLevel: ThinkingLevel = ThinkingLevel.DEFAULT,
 )
 
 val PROVIDER_PRESETS = listOf(
@@ -65,6 +78,7 @@ data class AiProviderEntity(
     val maxTokens: Int = 16000,
     /** Extra system-prompt text sent with every request through this provider (optional). */
     val extraSystem: String = "",
+    val thinkingLevel: ThinkingLevel = ThinkingLevel.DEFAULT,
 )
 
 @Entity(tableName = "prompts")
@@ -148,6 +162,23 @@ interface AiDao {
     @Query("DELETE FROM chat_messages") suspend fun deleteAllChatMessages()
     @Upsert suspend fun upsertChatMessages(m: List<ChatMessageEntity>)
 
+    // ---- Training plan ----
+    @Query("SELECT * FROM plan_workouts ORDER BY date, id")
+    fun observePlan(): Flow<List<PlanWorkoutEntity>>
+
+    @Query("SELECT * FROM plan_workouts ORDER BY id") suspend fun allPlanWorkouts(): List<PlanWorkoutEntity>
+    @Upsert suspend fun upsertPlanWorkouts(w: List<PlanWorkoutEntity>)
+    @Query("DELETE FROM plan_workouts") suspend fun deleteAllPlanWorkouts()
+
+    /** [from] is an ISO date; removes that day and everything after it. */
+    @Query("DELETE FROM plan_workouts WHERE date >= :from") suspend fun deletePlanFrom(from: String)
+
+    @Query("DELETE FROM plan_workouts WHERE id = :id") suspend fun deletePlanWorkout(id: Long)
+
+    /** [from] and [to] are ISO dates, inclusive. */
+    @Query("SELECT * FROM plan_workouts WHERE date >= :from AND date <= :to ORDER BY date, id")
+    suspend fun planBetween(from: String, to: String): List<PlanWorkoutEntity>
+
     @Query("SELECT * FROM chats ORDER BY updatedEpochMs DESC")
     fun observeChats(): Flow<List<ChatEntity>>
 
@@ -225,9 +256,9 @@ interface AiDao {
 @Database(
     entities = [
         AiProviderEntity::class, PromptTemplateEntity::class, AnalysisEntity::class,
-        ChatEntity::class, ChatMessageEntity::class,
+        ChatEntity::class, ChatMessageEntity::class, PlanWorkoutEntity::class,
     ],
-    version = 3,
+    version = 5,
     exportSchema = false,
 )
 abstract class AiDatabase : RoomDatabase() {
@@ -258,9 +289,28 @@ abstract class AiDatabase : RoomDatabase() {
             }
         }
 
+        /** v4: thinking level for providers. */
+        private val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `providers` ADD COLUMN `thinkingLevel` TEXT NOT NULL DEFAULT 'DEFAULT'")
+            }
+        }
+
+        /** v5: training plan calendar. */
+        private val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `plan_workouts` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "`date` TEXT NOT NULL, `type` TEXT NOT NULL, `title` TEXT NOT NULL, `distanceKm` REAL, " +
+                        "`durationMin` INTEGER, `target` TEXT NOT NULL, `notes` TEXT NOT NULL, `createdEpochMs` INTEGER NOT NULL)",
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_plan_workouts_date` ON `plan_workouts` (`date`)")
+            }
+        }
+
         fun create(context: Context): AiDatabase =
             Room.databaseBuilder(context, AiDatabase::class.java, "ai.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
                 .build()
     }
 }

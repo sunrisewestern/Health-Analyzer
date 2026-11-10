@@ -76,7 +76,8 @@ data class WebDavSettings(val url: String = "", val user: String = "", val passw
  *  - config: `config.json` – AI providers with their API keys in plain text (the file is always
  *    password-encrypted for that reason), prompt templates, and the app's preference files
  *    (athlete profile, baseline, Garmin connection incl. its key, WebDAV, AI settings).
- *  - data: `runs.jsonl`, `run_details.jsonl`, `analyses.jsonl`, `chats.jsonl`, `chat_messages.jsonl`.
+ *  - data: `runs.jsonl`, `run_details.jsonl`, `analyses.jsonl`, `chats.jsonl`, `chat_messages.jsonl`,
+ *    `plan_workouts.jsonl` (training plan; absent in backups made before the calendar existed).
  * The zip is optionally encrypted with [BackupCrypto] (required for config).
  */
 class BackupManager(private val context: Context) {
@@ -176,6 +177,8 @@ class BackupManager(private val context: Context) {
         table(CHATS, "chats", Int.MAX_VALUE) { _, o -> if (o == 0) chats else emptyList() }
         val messages = aiDao.allChatMessages()
         table(MESSAGES, "chat messages", Int.MAX_VALUE) { _, o -> if (o == 0) messages else emptyList() }
+        val plan = aiDao.allPlanWorkouts()
+        table(PLAN, "planned workouts", Int.MAX_VALUE) { _, o -> if (o == 0) plan else emptyList() }
         counts.remove("run details")
         return counts
     }
@@ -224,6 +227,9 @@ class BackupManager(private val context: Context) {
             o.remove("apiKey")
             o.addProperty("encryptedKey", KeyCipher.encrypt(key)) // re-encrypt with this phone's keystore
             if (runCatching { Protocol.valueOf(o.get("protocol").asString) }.isFailure) o.addProperty("protocol", Protocol.OPENAI.name)
+            if (o.get("thinkingLevel") == null || runCatching { com.healthanalyzer.app.ai.ThinkingLevel.valueOf(o.get("thinkingLevel").asString) }.isFailure) {
+                o.addProperty("thinkingLevel", com.healthanalyzer.app.ai.ThinkingLevel.DEFAULT.name)
+            }
             gson.fromJson(o, AiProviderEntity::class.java)
         }
         val prompts = root.getAsJsonArray("prompts").map { gson.fromJson(it, PromptTemplateEntity::class.java) }
@@ -248,6 +254,11 @@ class BackupManager(private val context: Context) {
         readLines(z, ANALYSES, 200, AnalysisEntity::class.java) { b, _ -> aiDao.upsertAnalyses(b) }
         readLines(z, CHATS, 200, ChatEntity::class.java) { b, _ -> aiDao.upsertChats(b) }
         readLines(z, MESSAGES, 500, ChatMessageEntity::class.java) { b, _ -> aiDao.upsertChatMessages(b) }
+        // Older backups have no plan; the current one is then left as it is.
+        if (z.getEntry(PLAN) != null) {
+            aiDao.deleteAllPlanWorkouts()
+            readLines(z, PLAN, 500, com.healthanalyzer.app.ai.PlanWorkoutEntity::class.java) { b, _ -> aiDao.upsertPlanWorkouts(b) }
+        }
         // Match the Garmin "downloaded" record to the restored runs, so the next sync only fetches what's missing.
         app.garmin.rebuildSyncMarker(app.repository)
     }
@@ -316,6 +327,7 @@ class BackupManager(private val context: Context) {
         private const val ANALYSES = "analyses.jsonl"
         private const val CHATS = "chats.jsonl"
         private const val MESSAGES = "chat_messages.jsonl"
+        private const val PLAN = "plan_workouts.jsonl"
 
         /** Preference files that make up "settings". */
         val PREF_FILES = listOf("athlete_profile", "athlete_baseline", "ai_settings", "garmin_connection", WebDavSettings.PREFS)

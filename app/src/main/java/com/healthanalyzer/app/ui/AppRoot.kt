@@ -33,6 +33,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
 private enum class Tab(val label: String) {
     RUNS("Runs"),
+    PLAN("Plan"),
     ANALYZE("Analyze"),
     SETTINGS("Settings"),
 }
@@ -44,6 +45,10 @@ fun AppRoot(runsVm: RunsViewModel, aiVm: AiViewModel, activity: Activity) {
     val snackbar = remember { SnackbarHostState() }
     val message by aiVm.settingsMessage.collectAsStateWithLifecycle()
     val isKeyboardOpen = WindowInsets.isImeVisible
+
+    val updateVm: com.healthanalyzer.app.update.UpdateViewModel = androidx.lifecycle.viewmodel.compose.viewModel()
+    LaunchedEffect(Unit) { updateVm.checkOnLaunch() }
+    com.healthanalyzer.app.update.UpdateDialog(updateVm)
 
     LaunchedEffect(message) {
         message?.let {
@@ -69,6 +74,7 @@ fun AppRoot(runsVm: RunsViewModel, aiVm: AiViewModel, activity: Activity) {
                             icon = {
                                 when (t) {
                                     Tab.RUNS -> AppIcons.Runner(modifier = Modifier.size(24.dp), tint = iconColor)
+                                    Tab.PLAN -> AppIcons.Calendar(modifier = Modifier.size(24.dp), tint = iconColor)
                                     Tab.ANALYZE -> AppIcons.Sparkles(modifier = Modifier.size(24.dp), tint = iconColor)
                                     Tab.SETTINGS -> AppIcons.Tune(modifier = Modifier.size(24.dp), tint = iconColor)
                                 }
@@ -104,6 +110,7 @@ fun AppRoot(runsVm: RunsViewModel, aiVm: AiViewModel, activity: Activity) {
                     aiVm.prepareForRun(id)
                     tab = Tab.ANALYZE.ordinal
                 })
+                Tab.PLAN -> PlanScreen(aiVm, onOpenSettings = { aiVm.navigateToSettings("ai"); tab = Tab.SETTINGS.ordinal })
                 Tab.ANALYZE -> AnalyzeScreen(aiVm, onOpenSettings = { tab = Tab.SETTINGS.ordinal })
                 Tab.SETTINGS -> SettingsScreen(aiVm, activity, runsVm)
             }

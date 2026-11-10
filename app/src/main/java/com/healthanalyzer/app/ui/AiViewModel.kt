@@ -3,7 +3,9 @@ package com.healthanalyzer.app.ui
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.room.withTransaction
 import com.healthanalyzer.app.HealthAnalyzerApp
+import com.healthanalyzer.app.ai.AiKeepAlive
 import com.healthanalyzer.app.ai.AiProviderEntity
 import com.healthanalyzer.app.ai.AnalysisEntity
 import com.healthanalyzer.app.ai.AthleteProfile
@@ -62,6 +64,7 @@ data class ProviderForm(
     val model: String = "",
     val maxTokens: String = "16000",
     val extraSystem: String = "",
+    val thinkingLevel: com.healthanalyzer.app.ai.ThinkingLevel = com.healthanalyzer.app.ai.ThinkingLevel.DEFAULT,
 )
 
 class AiViewModel(app: Application) : AndroidViewModel(app) {
@@ -164,6 +167,7 @@ class AiViewModel(app: Application) : AndroidViewModel(app) {
 
         job?.cancel()
         job = viewModelScope.launch {
+            AiKeepAlive.acquire(getApplication())
             _analyze.update {
                 it.copy(running = true, output = "", error = null, viewing = null, providerId = provider.id, promptId = prompt.id)
             }
@@ -207,6 +211,7 @@ class AiViewModel(app: Application) : AndroidViewModel(app) {
                 error = e.message ?: e.javaClass.simpleName
                 _analyze.update { it.copy(error = error) }
             } finally {
+                AiKeepAlive.release(getApplication())
                 _analyze.update { it.copy(running = false) }
                 if (output.isNotEmpty() || error != null) {
                     val record = AnalysisEntity(
@@ -293,6 +298,14 @@ class AiViewModel(app: Application) : AndroidViewModel(app) {
         if (_openChatId.value == id) _openChatId.value = null
     }
 
+    fun clearAllChats() = viewModelScope.launch {
+        chatJob?.cancel()
+        _liveReply.value = null
+        dao.deleteAllChatMessages()
+        dao.deleteAllChats()
+        _openChatId.value = null
+    }
+
     fun updateChat(c: com.healthanalyzer.app.ai.ChatEntity) = viewModelScope.launch { dao.upsertChat(c) }
 
     fun sendChat(text: String) {
@@ -326,6 +339,7 @@ class AiViewModel(app: Application) : AndroidViewModel(app) {
         var output = ""
         var error: String? = null
         _liveReply.value = LiveReply(chatId, "")
+        AiKeepAlive.acquire(getApplication())
         try {
             if (provider == null) throw IllegalStateException("Add an AI provider in Settings first.")
             val analyses = chat.analysisIdList.takeIf { it.isNotEmpty() }?.let { dao.analysesByIds(it) }.orEmpty()
@@ -342,6 +356,7 @@ class AiViewModel(app: Application) : AndroidViewModel(app) {
         } catch (e: Exception) {
             error = e.message ?: e.javaClass.simpleName
         } finally {
+            AiKeepAlive.release(getApplication())
             kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
                 dao.upsertMessage(
                     com.healthanalyzer.app.ai.ChatMessageEntity(
@@ -356,6 +371,216 @@ class AiViewModel(app: Application) : AndroidViewModel(app) {
                 dao.getChat(chatId)?.let { dao.upsertChat(it.copy(updatedEpochMs = System.currentTimeMillis())) }
                 _liveReply.value = null
             }
+        }
+    }
+
+    // ---- Training plan ----------------------------------------------------------------------
+
+    data class PlanState(val generating: Boolean = false, val receivedChars: Int = 0, val error: String? = null)
+
+    val planWorkouts: StateFlow<List<com.healthanalyzer.app.ai.PlanWorkoutEntity>> =
+        dao.observePlan().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    private val _plan = MutableStateFlow(PlanState())
+    val plan: StateFlow<PlanState> = _plan.asStateFlow()
+
+    private val _planInfo = MutableStateFlow(com.healthanalyzer.app.ai.PlanInfo.load(app))
+    val planInfo: StateFlow<com.healthanalyzer.app.ai.PlanInfo> = _planInfo.asStateFlow()
+
+    private var planJob: Job? = null
+
+    /**
+     * Asks the model for a plan starting today and puts it on the calendar. Planned workouts from
+     * today on are replaced only once the new plan has parsed; earlier days are kept as history.
+     */
+    fun generatePlan(providerId: Long?, goal: String, weeks: Int, runsPerWeek: Int) {
+        val provider = providers.value.firstOrNull { it.id == providerId } ?: providers.value.firstOrNull()
+        if (provider == null) {
+            _plan.value = PlanState(error = "Add an AI provider in Settings first.")
+            return
+        }
+        val request = com.healthanalyzer.app.ai.PlanRequest(goal.trim(), weeks, runsPerWeek)
+        // Remember the request right away so the dialog reopens with it even if this attempt fails.
+        savePlanInfo(_planInfo.value.copy(goal = request.goal, weeks = weeks, runsPerWeek = runsPerWeek))
+        planJob?.cancel()
+        planJob = viewModelScope.launch {
+            AiKeepAlive.acquire(getApplication())
+            _plan.value = PlanState(generating = true)
+            try {
+                val start = java.time.LocalDate.now()
+                val end = start.plusWeeks(weeks.toLong()).minusDays(1)
+                val system = listOf(renderer.render(com.healthanalyzer.app.ai.TrainingPlan.SYSTEM, null), provider.extraSystem)
+                    .filter { it.isNotBlank() }.joinToString("\n\n")
+                val user = renderer.render(com.healthanalyzer.app.ai.TrainingPlan.userTemplate(request, start, end), null)
+                val output = StringBuilder()
+                LlmClients.forProtocol(provider.protocol).stream(provider.toConfig(), system, user).collect { delta ->
+                    output.append(delta)
+                    _plan.update { it.copy(receivedChars = output.length) }
+                }
+                val now = System.currentTimeMillis()
+                val parsed = com.healthanalyzer.app.ai.TrainingPlan.parse(output.toString(), start, end, now)
+                container.aiDatabase.withTransaction {
+                    dao.deletePlanFrom(start.toString())
+                    dao.upsertPlanWorkouts(parsed.workouts)
+                }
+                savePlanInfo(
+                    _planInfo.value.copy(summary = parsed.summary, createdEpochMs = now, source = "${provider.name} · ${provider.model}"),
+                )
+                _plan.value = PlanState()
+                _settingsMessage.value = "Plan added to your calendar: ${parsed.workouts.size} workouts"
+            } catch (e: CancellationException) {
+                _plan.value = PlanState()
+                throw e
+            } catch (e: Exception) {
+                _plan.value = PlanState(error = e.message ?: e.javaClass.simpleName)
+            } finally {
+                AiKeepAlive.release(getApplication())
+            }
+        }
+    }
+
+    fun stopPlan() { planJob?.cancel() }
+
+    fun dismissPlanError() = _plan.update { it.copy(error = null) }
+
+    fun deletePlanWorkout(id: Long) = viewModelScope.launch { dao.deletePlanWorkout(id) }
+
+    /** Removes planned workouts from today on; past days stay as history. */
+    fun clearUpcomingPlan() = viewModelScope.launch {
+        dao.deletePlanFrom(java.time.LocalDate.now().toString())
+        savePlanInfo(_planInfo.value.copy(summary = "", createdEpochMs = 0, source = ""))
+    }
+
+    private fun savePlanInfo(info: com.healthanalyzer.app.ai.PlanInfo) {
+        com.healthanalyzer.app.ai.PlanInfo.save(getApplication(), info)
+        _planInfo.value = info
+    }
+
+    // ---- Today's recap (Plan tab) -----------------------------------------------------------
+
+    private val _recapSettings = MutableStateFlow(com.healthanalyzer.app.ai.RecapSettings.load(app))
+    val recapSettings: StateFlow<com.healthanalyzer.app.ai.RecapSettings> = _recapSettings.asStateFlow()
+
+    private val _recap = MutableStateFlow(com.healthanalyzer.app.ai.Recap.load(app))
+    val recap: StateFlow<com.healthanalyzer.app.ai.Recap> = _recap.asStateFlow()
+
+    private val _recapRunning = MutableStateFlow(false)
+    val recapRunning: StateFlow<Boolean> = _recapRunning.asStateFlow()
+
+    private val _placeSearching = MutableStateFlow(false)
+    val placeSearching: StateFlow<Boolean> = _placeSearching.asStateFlow()
+
+    private var recapJob: Job? = null
+
+    fun setRecapEnabled(enabled: Boolean) = saveRecapSettings(_recapSettings.value.copy(enabled = enabled))
+
+    /** Looks up [city] and uses it for the weather; blank removes the place. */
+    fun setRecapCity(city: String) {
+        if (city.isBlank()) {
+            saveRecapSettings(_recapSettings.value.copy(place = null))
+            _settingsMessage.value = "Weather location removed"
+            return
+        }
+        viewModelScope.launch {
+            _placeSearching.value = true
+            try {
+                val place = com.healthanalyzer.app.ai.Weather.geocode(LlmClients.http, city)
+                if (place == null) {
+                    _settingsMessage.value = "Couldn't find \"${city.trim()}\". Try the city name only, e.g. Toronto."
+                } else {
+                    saveRecapSettings(_recapSettings.value.copy(place = place))
+                    _settingsMessage.value = "Weather location: ${place.name}"
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _settingsMessage.value = "Location lookup failed: ${e.message ?: e.javaClass.simpleName}"
+            } finally {
+                _placeSearching.value = false
+            }
+        }
+    }
+
+    private fun saveRecapSettings(s: com.healthanalyzer.app.ai.RecapSettings) {
+        com.healthanalyzer.app.ai.RecapSettings.save(getApplication(), s)
+        _recapSettings.value = s
+    }
+
+    /**
+     * Writes today's briefing unless the cached one still fits (same day, today's workouts and
+     * place). A failed attempt is cached too, so opening the tab doesn't retry; [force] does.
+     */
+    fun refreshRecap(force: Boolean = false) {
+        val settings = _recapSettings.value
+        if (!settings.enabled || recapJob?.isActive == true) return
+        recapJob = viewModelScope.launch {
+            val today = java.time.LocalDate.now()
+            val todays = dao.planBetween(today.toString(), today.toString())
+            val key = com.healthanalyzer.app.ai.TodayRecap.key(today, todays, settings.place)
+            if (!force && _recap.value.key == key) return@launch
+            val provider = providers.value.firstOrNull { it.id == _analyze.value.providerId } ?: providers.value.firstOrNull()
+                ?: dao.allProviders().firstOrNull()
+            _recapRunning.value = true
+            _recap.value = com.healthanalyzer.app.ai.Recap(key = key)
+            var weatherLine = ""
+            var weatherText: String? = null
+            var output = ""
+            var error: String? = null
+            try {
+                settings.place?.let { place ->
+                    try {
+                        val w = com.healthanalyzer.app.ai.Weather.today(LlmClients.http, place)
+                        weatherLine = "${place.name.substringBefore(',')}: ${w.shortLine()}"
+                        weatherText = w.promptText()
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        weatherLine = "Weather unavailable (${e.message ?: e.javaClass.simpleName})"
+                    }
+                }
+                if (provider == null) throw IllegalStateException("Add an AI provider in Settings for a coach's briefing.")
+                AiKeepAlive.acquire(getApplication())
+                try {
+                    val zone = java.time.ZoneId.systemDefault()
+                    val runDao = container.database.runDao()
+                    val runsToday = runDao.runsSince(today.atStartOfDay(zone).toInstant().toEpochMilli())
+                    val weekStart = today.with(java.time.temporal.TemporalAdjusters.previousOrSame(java.time.DayOfWeek.MONDAY))
+                    val weekRuns = runDao.runsSince(weekStart.atStartOfDay(zone).toInstant().toEpochMilli())
+                    val weekPlan = dao.planBetween(weekStart.toString(), weekStart.plusDays(6).toString())
+                    val done = runsToday.joinToString("; ") { r ->
+                        val km = (r.distanceM ?: 0f) / 1000.0
+                        "%s %.2f km in %s".format(
+                            PromptRenderer.typeLabel(r.exerciseType), km, com.healthanalyzer.app.data.RunAnalysis.formatDuration(r.durationSec),
+                        ) + (r.meanHeartRate?.let { ", avg HR %.0f".format(it) } ?: "")
+                    }
+                    val user = com.healthanalyzer.app.ai.TodayRecap.userPrompt(
+                        today, todays, done,
+                        weekPlannedKm = weekPlan.sumOf { (it.distanceKm ?: 0f).toDouble() },
+                        weekDoneKm = weekRuns.sumOf { (it.distanceM ?: 0f).toDouble() } / 1000,
+                        weather = weatherText,
+                    )
+                    val system = listOf(renderer.render(com.healthanalyzer.app.ai.TodayRecap.SYSTEM, null), provider.extraSystem)
+                        .filter { it.isNotBlank() }.joinToString("\n\n")
+                    LlmClients.forProtocol(provider.protocol)
+                        .stream(provider.toConfig(), system, renderer.render(user, null))
+                        .collect { delta ->
+                            output += delta
+                            _recap.value = _recap.value.copy(text = output, weatherLine = weatherLine, error = null)
+                        }
+                    if (output.isBlank()) error = "The model returned an empty reply."
+                } finally {
+                    AiKeepAlive.release(getApplication())
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                error = e.message ?: e.javaClass.simpleName
+            } finally {
+                _recapRunning.value = false
+            }
+            val r = com.healthanalyzer.app.ai.Recap(key, output.trim(), weatherLine, error, System.currentTimeMillis())
+            com.healthanalyzer.app.ai.Recap.save(getApplication(), r)
+            _recap.value = r
         }
     }
 
@@ -451,6 +676,11 @@ class AiViewModel(app: Application) : AndroidViewModel(app) {
         _analyze.update { if (it.viewing?.id == a.id) it.copy(viewing = null) else it }
     }
 
+    fun clearAllAnalyses() = viewModelScope.launch {
+        dao.deleteAllAnalyses()
+        _analyze.update { it.copy(viewing = null) }
+    }
+
     // ---- Settings ---------------------------------------------------------------------------
 
     fun formFor(p: AiProviderEntity?): ProviderForm = p?.let {
@@ -458,6 +688,7 @@ class AiViewModel(app: Application) : AndroidViewModel(app) {
             id = it.id, name = it.name, protocol = it.protocol, baseUrl = it.baseUrl,
             hasStoredKey = it.encryptedKey.isNotEmpty(), model = it.model,
             maxTokens = it.maxTokens.toString(), extraSystem = it.extraSystem,
+            thinkingLevel = it.thinkingLevel,
         )
     } ?: ProviderForm()
 
@@ -479,6 +710,7 @@ class AiViewModel(app: Application) : AndroidViewModel(app) {
                 model = form.model.trim(),
                 maxTokens = form.maxTokens.toIntOrNull()?.coerceIn(256, 128_000) ?: 16000,
                 extraSystem = form.extraSystem,
+                thinkingLevel = form.thinkingLevel,
             ),
         )
         if (_analyze.value.providerId == null) select(providerId = if (form.id == 0L) id else form.id)
@@ -577,6 +809,9 @@ class AiViewModel(app: Application) : AndroidViewModel(app) {
         _baseline.value = Baseline.load(app)
         _useBaseline.value = Baseline.useInAnalyses(app)
         _themeConfig.value = ThemeConfig.load(app)
+        _planInfo.value = com.healthanalyzer.app.ai.PlanInfo.load(app)
+        _recapSettings.value = com.healthanalyzer.app.ai.RecapSettings.load(app)
+        _recap.value = com.healthanalyzer.app.ai.Recap.load(app)
     }
 
     private fun AiProviderEntity.toConfig() = LlmConfig(
@@ -585,6 +820,7 @@ class AiViewModel(app: Application) : AndroidViewModel(app) {
         apiKey = KeyCipher.decrypt(encryptedKey),
         model = model,
         maxTokens = maxTokens,
+        thinkingLevel = thinkingLevel,
         onCredentialsRefreshed = { fresh -> persistCredentials(id, fresh) },
     )
 
@@ -595,7 +831,12 @@ class AiViewModel(app: Application) : AndroidViewModel(app) {
             existing?.encryptedKey?.let(KeyCipher::decrypt).orEmpty()
         }
         return LlmConfig(
-            form.protocol, form.baseUrl.trim(), key.trim(), form.model.trim(), maxTokens,
+            protocol = form.protocol,
+            baseUrl = form.baseUrl.trim(),
+            apiKey = key.trim(),
+            model = form.model.trim(),
+            maxTokens = maxTokens,
+            thinkingLevel = form.thinkingLevel,
             onCredentialsRefreshed = { fresh ->
                 _codexCredentials.value = fresh
                 if (form.id != 0L) persistCredentials(form.id, fresh)

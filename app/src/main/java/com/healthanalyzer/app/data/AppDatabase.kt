@@ -66,9 +66,37 @@ interface RunDao {
 
     @Upsert
     suspend fun upsertDetails(details: List<RunDetailEntity>)
+
+    // ---- Recovery and non-running workouts ----
+
+    /** [from] and [to] are ISO dates, inclusive. */
+    @Query("SELECT * FROM daily_recovery WHERE date >= :from AND date <= :to ORDER BY date")
+    suspend fun recoveryBetween(from: String, to: String): List<DailyRecoveryEntity>
+
+    @Query("SELECT MAX(date) FROM daily_recovery")
+    suspend fun latestRecoveryDate(): String?
+
+    @Upsert
+    suspend fun upsertRecovery(days: List<DailyRecoveryEntity>)
+
+    @Query("DELETE FROM daily_recovery")
+    suspend fun deleteAllRecovery()
+
+    @Query("SELECT * FROM other_workouts WHERE startEpochMs >= :sinceEpochMs ORDER BY startEpochMs")
+    suspend fun otherWorkoutsSince(sinceEpochMs: Long): List<OtherWorkoutEntity>
+
+    @Upsert
+    suspend fun upsertOtherWorkouts(workouts: List<OtherWorkoutEntity>)
+
+    @Query("DELETE FROM other_workouts")
+    suspend fun deleteAllOtherWorkouts()
 }
 
-@Database(entities = [RunEntity::class, RunDetailEntity::class], version = 3, exportSchema = false)
+@Database(
+    entities = [RunEntity::class, RunDetailEntity::class, DailyRecoveryEntity::class, OtherWorkoutEntity::class],
+    version = 4,
+    exportSchema = false,
+)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun runDao(): RunDao
 
@@ -92,9 +120,26 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /** v4: daily recovery (sleep, energy score, resting HR) and non-running workouts. */
+        private val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `daily_recovery` (`date` TEXT NOT NULL, `sleepScore` INTEGER, `sleepMinutes` INTEGER, " +
+                        "`deepMinutes` INTEGER, `remMinutes` INTEGER, `awakeMinutes` INTEGER, `bedtimeEpochMs` INTEGER, " +
+                        "`wakeEpochMs` INTEGER, `energyScore` REAL, `restingHr` INTEGER, PRIMARY KEY(`date`))",
+                )
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `other_workouts` (`id` TEXT NOT NULL, `exerciseType` TEXT NOT NULL, `title` TEXT, " +
+                        "`startEpochMs` INTEGER NOT NULL, `endEpochMs` INTEGER NOT NULL, `zoneOffsetSec` INTEGER, " +
+                        "`durationSec` INTEGER NOT NULL, `distanceM` REAL, `calories` REAL, `meanHeartRate` REAL, " +
+                        "`maxHeartRate` REAL, `altitudeGain` REAL, `sourceAppId` TEXT, `hrSeconds` TEXT, PRIMARY KEY(`id`))",
+                )
+            }
+        }
+
         fun create(context: Context): AppDatabase =
             Room.databaseBuilder(context, AppDatabase::class.java, "health_analyzer.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                 .build()
     }
 }

@@ -14,7 +14,11 @@ import com.samsung.android.sdk.health.data.permission.Permission
 import com.samsung.android.sdk.health.data.request.DataType
 import com.samsung.android.sdk.health.data.request.DataTypes
 import com.samsung.android.sdk.health.data.request.InstantTimeFilter
+import com.healthanalyzer.app.data.DailyRecoveryEntity
+import com.healthanalyzer.app.data.HrHistogram
 import com.healthanalyzer.app.data.HrReading
+import com.healthanalyzer.app.data.OtherWorkoutEntity
+import com.samsung.android.sdk.health.data.request.LocalDateFilter
 import com.healthanalyzer.app.data.RestingHeartRate
 import com.samsung.android.sdk.health.data.request.LocalTimeFilter
 import com.samsung.android.sdk.health.data.request.Ordering
@@ -65,13 +69,34 @@ class SamsungHealthSource(context: Context) {
     suspend fun hasAllPermissions(): Boolean =
         store.getGrantedPermissions(permissions).containsAll(permissions)
 
-    /** Shows Samsung Health's permission screen. Returns true if everything was granted. */
+    /** Sleep, energy score and all-day heart rate. Nice to have: runs sync without them. */
+    val recoveryPermissions: Set<Permission> = setOf(
+        Permission.of(DataTypes.SLEEP, AccessType.READ),
+        Permission.of(DataTypes.ENERGY_SCORE, AccessType.READ),
+        Permission.of(DataTypes.HEART_RATE, AccessType.READ),
+    )
+
+    /**
+     * Shows Samsung Health's permission screen, asking for the recovery data too. Returns true
+     * if everything needed for runs was granted.
+     */
     suspend fun requestPermissions(activity: Activity): Boolean =
-        store.requestPermissions(permissions, activity).containsAll(permissions)
+        store.requestPermissions(permissions + recoveryPermissions, activity).containsAll(permissions)
+
+    suspend fun grantedRecoveryPermissions(): Set<Permission> = store.getGrantedPermissions(recoveryPermissions)
+
+    /** Asks for the recovery permissions that are still missing; the answer does not affect run sync. */
+    suspend fun requestRecoveryPermissions(activity: Activity) {
+        if (!grantedRecoveryPermissions().containsAll(recoveryPermissions)) store.requestPermissions(recoveryPermissions, activity)
+    }
 
     /** Reads every running-type session that starts in [since, until). */
-    suspend fun readRuns(since: Instant, until: Instant): List<SyncedRun> {
+    suspend fun readRuns(since: Instant, until: Instant): List<SyncedRun> = readExercise(since, until).first
+
+    /** Reads every session that starts in [since, until): runs, and everything else as [OtherWorkoutEntity]. */
+    suspend fun readExercise(since: Instant, until: Instant): Pair<List<SyncedRun>, List<OtherWorkoutEntity>> {
         val result = mutableListOf<SyncedRun>()
+        val others = mutableListOf<OtherWorkoutEntity>()
         var pageToken: String? = null
         do {
             val builder = DataTypes.EXERCISE.readDataRequestBuilder
@@ -82,10 +107,123 @@ class SamsungHealthSource(context: Context) {
             pageToken?.let { builder.setPageToken(it) }
 
             val response = store.readData(builder.build())
-            response.dataList.forEach { point -> result += toRuns(point) }
+            response.dataList.forEach { point ->
+                result += toRuns(point)
+                others += toOtherWorkouts(point)
+            }
             pageToken = response.pageToken
         } while (!pageToken.isNullOrEmpty())
-        return result
+        return result to others
+    }
+
+    private fun toOtherWorkouts(point: HealthDataPoint): List<OtherWorkoutEntity> {
+        val sessions: List<ExerciseSession> =
+            point.getValue(DataType.ExerciseType.SESSIONS) ?: return emptyList()
+        return sessions.mapIndexedNotNull { index, s ->
+            if (s.exerciseType in RUNNING_TYPES) return@mapIndexedNotNull null
+            OtherWorkoutEntity(
+                id = "${point.uid}#$index",
+                exerciseType = s.exerciseType.name,
+                title = s.customTitle ?: point.getValue(DataType.ExerciseType.CUSTOM_TITLE),
+                startEpochMs = s.startTime.toEpochMilli(),
+                endEpochMs = s.endTime.toEpochMilli(),
+                zoneOffsetSec = point.zoneOffset?.totalSeconds,
+                durationSec = s.duration.seconds,
+                distanceM = s.distance,
+                calories = s.calories,
+                meanHeartRate = s.meanHeartRate,
+                maxHeartRate = s.maxHeartRate,
+                altitudeGain = s.altitudeGain,
+                sourceAppId = point.dataSource?.appId,
+                hrSeconds = HrHistogram.encode(
+                    s.log.orEmpty().mapNotNull { row -> row.heartRate?.let { row.timestamp.toEpochMilli() to it } },
+                ),
+            )
+        }
+    }
+
+    // ---- Recovery ------------------------------------------------------------------------------
+
+    /**
+     * Sleep, energy score and resting heart rate per day in [from]..[to] (local dates), for
+     * whichever of them is in [granted]. Sleep is filed under the day it ended.
+     */
+    suspend fun readRecovery(from: LocalDate, to: LocalDate, granted: Set<Permission>): List<DailyRecoveryEntity> {
+        val days = sortedMapOf<LocalDate, DailyRecoveryEntity>()
+        fun update(date: LocalDate, change: (DailyRecoveryEntity) -> DailyRecoveryEntity) {
+            if (date in from..to) days[date] = change(days[date] ?: DailyRecoveryEntity(date.toString()))
+        }
+
+        if (Permission.of(DataTypes.SLEEP, AccessType.READ) in granted) {
+            // A night's sleep starts the evening before the day it counts for.
+            readPaged { token ->
+                DataTypes.SLEEP.readDataRequestBuilder
+                    .setLocalTimeFilter(LocalTimeFilter.of(from.minusDays(1).atStartOfDay(), to.plusDays(1).atStartOfDay()))
+                    .setOrdering(Ordering.ASC)
+                    .setPageSize(100)
+                    .apply { token?.let { setPageToken(it) } }
+                    .build()
+            }.groupBy { p -> (p.endTime ?: p.startTime).atOffset(p.zoneOffset ?: ZoneOffset.UTC).toLocalDate() }
+                .forEach { (date, sleeps) ->
+                    fun asleep(p: HealthDataPoint) = stageMinutes(p).let { st ->
+                        if (st.isEmpty()) p.getValue(DataType.SleepType.DURATION)?.toMinutes()?.toInt() ?: 0
+                        else st.filterKeys { it != DataType.SleepType.StageType.AWAKE }.values.sum()
+                    }
+                    val main = sleeps.maxBy { asleep(it) }
+                    val stages = stageMinutes(main)
+                    update(date) {
+                        it.copy(
+                            sleepScore = main.getValue(DataType.SleepType.SLEEP_SCORE)?.takeIf { s -> s > 0 },
+                            sleepMinutes = sleeps.sumOf { s -> asleep(s) }.takeIf { m -> m > 0 },
+                            deepMinutes = stages[DataType.SleepType.StageType.DEEP],
+                            remMinutes = stages[DataType.SleepType.StageType.REM],
+                            awakeMinutes = stages[DataType.SleepType.StageType.AWAKE],
+                            bedtimeEpochMs = main.startTime.toEpochMilli(),
+                            wakeEpochMs = main.endTime?.toEpochMilli(),
+                        )
+                    }
+                }
+        }
+        if (Permission.of(DataTypes.ENERGY_SCORE, AccessType.READ) in granted) {
+            readPaged { token ->
+                DataTypes.ENERGY_SCORE.readDataRequestBuilder
+                    .setLocalDateFilter(LocalDateFilter.of(from, to.plusDays(1)))
+                    .setPageSize(500)
+                    .apply { token?.let { setPageToken(it) } }
+                    .build()
+            }.forEach { p ->
+                val score = p.getValue(DataType.EnergyScoreType.ENERGY_SCORE)?.takeIf { it > 0 } ?: return@forEach
+                // Daily points are stamped with the day at 00:00 UTC, whatever the time zone.
+                val utc = p.startTime.atOffset(ZoneOffset.UTC)
+                val date = if (utc.toLocalTime() == java.time.LocalTime.MIDNIGHT) utc.toLocalDate()
+                else p.startTime.atOffset(p.zoneOffset ?: ZoneOffset.UTC).toLocalDate()
+                update(date) { it.copy(energyScore = score) }
+            }
+        }
+        if (Permission.of(DataTypes.HEART_RATE, AccessType.READ) in granted) {
+            RestingHeartRate.daily(readHeartRate(from.atStartOfDay(), to.plusDays(1).atStartOfDay())).forEach { (date, bpm) ->
+                update(date) { it.copy(restingHr = Math.round(bpm).toInt()) }
+            }
+        }
+        return days.values.toList()
+    }
+
+    private fun stageMinutes(sleep: HealthDataPoint): Map<DataType.SleepType.StageType, Int> =
+        sleep.getValue(DataType.SleepType.SESSIONS).orEmpty().flatMap { it.stages.orEmpty() }
+            .groupBy { it.stage }
+            .mapValues { (_, list) -> list.sumOf { Duration.between(it.startTime, it.endTime).seconds }.div(60).toInt() }
+
+    private suspend fun readPaged(
+        request: (pageToken: String?) -> com.samsung.android.sdk.health.data.request.ReadDataRequest<HealthDataPoint>,
+    ): List<HealthDataPoint> {
+        val all = mutableListOf<HealthDataPoint>()
+        var token: String? = null
+        do {
+            val response = store.readData(request(token))
+            all += response.dataList
+            token = response.pageToken
+        } while (!token.isNullOrEmpty())
+        return all
     }
 
     private fun toRuns(point: HealthDataPoint): List<SyncedRun> {
@@ -218,11 +356,15 @@ class SamsungHealthSource(context: Context) {
      */
     private suspend fun readHeartRate(days: Int): List<HrReading> {
         val today = LocalDate.now().atStartOfDay()
+        return readHeartRate(today.minusDays(days.toLong()), today)
+    }
+
+    private suspend fun readHeartRate(from: java.time.LocalDateTime, until: java.time.LocalDateTime): List<HrReading> {
         val readings = mutableListOf<HrReading>()
         var pageToken: String? = null
         do {
             val builder = DataTypes.HEART_RATE.readDataRequestBuilder
-                .setLocalTimeFilter(LocalTimeFilter.of(today.minusDays(days.toLong()), today))
+                .setLocalTimeFilter(LocalTimeFilter.of(from, until))
                 .setOrdering(Ordering.ASC)
                 .setPageSize(HR_PAGE_SIZE)
             pageToken?.let { builder.setPageToken(it) }

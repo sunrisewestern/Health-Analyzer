@@ -131,6 +131,8 @@ class AiViewModel(app: Application) : AndroidViewModel(app) {
             }
             seedNewPromptsOnce()
             addPlanReviewToReviewPromptsOnce()
+            addRecoveryToReviewPromptsOnce()
+            removePlanningFromPromptsOnce()
         }
     }
 
@@ -141,6 +143,36 @@ class AiViewModel(app: Application) : AndroidViewModel(app) {
             .mapNotNull { p -> withPlanReview(p.userTemplate)?.let { p.copy(userTemplate = it) } }
         if (changed.isNotEmpty()) dao.upsertPrompts(changed)
         prefs().edit().putBoolean("planReviewAdded", true).apply()
+    }
+
+    /** The same, once, for {{recovery}} (sleep, energy score, resting HR). */
+    private suspend fun addRecoveryToReviewPromptsOnce() {
+        if (prefs().getBoolean("recoveryAdded", false)) return
+        val changed = dao.allPrompts().filter { it.name.startsWith("Training review") }
+            .mapNotNull { p -> com.healthanalyzer.app.ai.withRecovery(p.userTemplate)?.let { p.copy(userTemplate = it) } }
+        if (changed.isNotEmpty()) dao.upsertPrompts(changed)
+        prefs().edit().putBoolean("recoveryAdded", true).apply()
+    }
+
+    /** Saved prompts swap the built-in "propose a plan" requests for {{planning}} once, so the setting decides. */
+    private suspend fun removePlanningFromPromptsOnce() {
+        if (prefs().getBoolean("planningPlaceholderAdded", false)) return
+        val changed = dao.allPrompts().mapNotNull { p ->
+            val system = com.healthanalyzer.app.ai.withPlanningPlaceholder(p.systemPrompt)
+            val user = com.healthanalyzer.app.ai.withPlanningPlaceholder(p.userTemplate)
+            if (system == null && user == null) null
+            else p.copy(systemPrompt = system ?: p.systemPrompt, userTemplate = user ?: p.userTemplate)
+        }
+        if (changed.isNotEmpty()) dao.upsertPrompts(changed)
+        prefs().edit().putBoolean("planningPlaceholderAdded", true).apply()
+    }
+
+    private val _planInAnalyses = MutableStateFlow(com.healthanalyzer.app.ai.PlanningAdvice.enabled(app))
+    val planInAnalyses: StateFlow<Boolean> = _planInAnalyses.asStateFlow()
+
+    fun setPlanInAnalyses(on: Boolean) {
+        com.healthanalyzer.app.ai.PlanningAdvice.setEnabled(getApplication(), on)
+        _planInAnalyses.value = on
     }
 
     private fun prefs() = getApplication<Application>().getSharedPreferences("ai_settings", android.content.Context.MODE_PRIVATE)

@@ -23,16 +23,24 @@ object RestingHeartRate {
         windowMinutes: Long = 30,
         minReadingsPerWindow: Int = 3,
     ): RestingHrEstimate? {
-        val daily = readings
-            .filter { it.bpm in 25f..220f }
-            .groupBy { it.time.toLocalDate() }
-            .mapNotNull { (_, day) -> lowestWindowMean(day.sortedBy { it.time }, windowMinutes, minReadingsPerWindow) }
-            .sorted()
+        val daily = daily(readings, windowMinutes, minReadingsPerWindow).values.sorted()
         if (daily.isEmpty()) return null
         val mid = daily.size / 2
         val median = if (daily.size % 2 == 1) daily[mid] else (daily[mid - 1] + daily[mid]) / 2
         return RestingHrEstimate(Math.round(median).toInt(), daily.size)
     }
+
+    /** Each day's lowest sustained [windowMinutes] average; days without enough readings are left out. */
+    fun daily(
+        readings: List<HrReading>,
+        windowMinutes: Long = 30,
+        minReadingsPerWindow: Int = 3,
+    ): Map<java.time.LocalDate, Double> = readings
+        .filter { it.bpm in 25f..220f }
+        .groupBy { it.time.toLocalDate() }
+        .mapNotNull { (date, day) ->
+            lowestWindowMean(day.sortedBy { it.time }, windowMinutes, minReadingsPerWindow)?.let { date to it }
+        }.toMap()
 
     /** Lowest mean over any [windowMinutes]-long window that starts at a reading and is at least 2/3 covered. */
     private fun lowestWindowMean(day: List<HrReading>, windowMinutes: Long, minCount: Int): Double? {

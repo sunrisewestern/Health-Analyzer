@@ -58,6 +58,13 @@ class RunsViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun sync(activity: Activity, full: Boolean) = launchGuarded(activity) {
+        // Sleep, energy score and all-day heart rate were added later: ask for them once.
+        val prefs = activity.getSharedPreferences("sync_state", android.content.Context.MODE_PRIVATE)
+        if (!prefs.getBoolean("recoveryAsked", false)) {
+            prefs.edit().putBoolean("recoveryAsked", true).apply()
+            runCatching { source.requestRecoveryPermissions(activity) }
+                .onFailure { if (it is kotlinx.coroutines.CancellationException) throw it }
+        }
         val count = repository.sync(full)
         _state.update { it.copy(message = "Synced $count run(s) from Samsung Health") }
     }

@@ -134,6 +134,8 @@ data class Baseline(
  *  {{run}}                the selected run in depth: metrics, km splits, pauses, HR zones, drift
  *  {{recent_runs}}        one line per session in the last 28 days ({{recent_runs:N}} for N days)
  *  {{weekly_summary}}     weekly totals, HR-zone minutes and load, last 12 weeks ({{weekly_summary:N}} for N weeks)
+ *  {{recovery}}           sleep, energy score and resting HR per day, last 14 days ({{recovery:N}} for N days)
+ *  {{planning}}           asks for advice on coming sessions, or tells the model not to plan (Settings)
  *  {{plan_review}}        training plan vs recorded sessions, last 4 weeks ({{plan_review:N}} for N weeks)
  */
 class PromptRenderer(
@@ -150,13 +152,18 @@ class PromptRenderer(
         var out = template
         out = out.replace("{{athlete}}", athlete(profile, maxHr))
         out = out.replace("{{language}}", profile.language)
+        out = out.replace(PlanningAdvice.PLACEHOLDER, PlanningAdvice.text(PlanningAdvice.enabled(context)))
         if ("{{baseline}}" in out) {
             out = out.replace("{{baseline}}", Baseline.load(context)?.let { "${it.header()}:\n${it.text}" } ?: "(no baseline saved yet)")
         }
         out = STATS.replace(out) { m -> statsCache[m.groupValues[1].toIntOrNull() ?: 12].orEmpty() }
         out = out.replace("{{today}}", LocalDate.now().toString())
         if ("{{run}}" in out) {
-            out = out.replace("{{run}}", run?.let { runDetail(it, maxHr) } ?: "(no run selected)")
+            val recovery = run?.let {
+                val day = localStart(it.run).toLocalDate()
+                TrainingLoad.recoveryOn(day, dao.recoveryBetween(day.minusDays(28).toString(), day.toString()))
+            }
+            out = out.replace("{{run}}", run?.let { runDetail(it, maxHr) + (recovery?.let { r -> "\n\n$r" } ?: "") } ?: "(no run selected)")
         }
         out = RECENT.replace(out) { m ->
             val days = m.groupValues[1].toIntOrNull() ?: 28
@@ -168,6 +175,7 @@ class PromptRenderer(
             weeklyBlocking(weeks)
         }
         out = PLAN.replace(out) { m -> planCache[m.groupValues[1].toIntOrNull() ?: 4].orEmpty() }
+        out = RECOVERY.replace(out) { m -> recoveryCache[m.groupValues[1].toIntOrNull() ?: 14].orEmpty() }
         return out
     }
 
@@ -177,6 +185,7 @@ class PromptRenderer(
     private var statsCache: Map<Int, String> = emptyMap()
     private var dynamicsCache: Map<Int, String> = emptyMap()
     private var planCache: Map<Int, String> = emptyMap()
+    private var recoveryCache: Map<Int, String> = emptyMap()
     /** Seconds per HR zone for a run, keyed by run, its last update and the zone limits. */
     private val zoneSecondsCache = HashMap<String, DoubleArray?>()
     private val gson = Gson()
@@ -190,6 +199,8 @@ class PromptRenderer(
             .associateWith { weekly(it) }
         dynamicsCache = DYNAMICS.findAll(template).map { it.groupValues[1].toIntOrNull() ?: 90 }.distinct()
             .associateWith { dynamics(it) }
+        recoveryCache = RECOVERY.findAll(template).map { it.groupValues[1].toIntOrNull() ?: 14 }.distinct()
+            .associateWith { recovery(it) }
         planCache = PLAN.findAll(template).map { it.groupValues[1].toIntOrNull() ?: 4 }.distinct()
             .associateWith { planReview(it) }
         if (STATS.containsMatchIn(template)) {
@@ -232,7 +243,13 @@ class PromptRenderer(
         val since = LocalDate.now().minusDays(days.toLong())
         // Reach back further so the first line can say how long the break before it was.
         val runs = dao.runsSince(startOfDay(since.minusDays(60)))
-        return TrainingLoad.recentRuns(runs, days, since)
+        val other = TrainingLoad.otherTraining(dao.otherWorkoutsSince(startOfDay(since)), days, since)
+        return TrainingLoad.recentRuns(runs, days, since) + if (other.isEmpty()) "" else "\n\n$other"
+    }
+
+    private suspend fun recovery(days: Int): String {
+        val today = LocalDate.now()
+        return TrainingLoad.recovery(dao.recoveryBetween(today.minusDays(maxOf(days, 35).toLong()).toString(), today.toString()), days, today)
     }
 
     private suspend fun planReview(weeks: Int): String {
@@ -240,7 +257,7 @@ class PromptRenderer(
         val from = today.minusWeeks(weeks.toLong())
         val plan = planBetween?.invoke(from.toString(), today.plusDays(14).toString()).orEmpty()
         if (plan.isEmpty()) return "(no training plan saved)"
-        return TrainingLoad.planReview(plan, dao.runsSince(startOfDay(from)), weeks, PlanInfo.load(context).goal, today)
+        return TrainingLoad.planReview(plan, dao.runsSince(startOfDay(from)), weeks, PlanInfo.load(context).goal, today, dao.otherWorkoutsSince(startOfDay(from)))
     }
 
     private fun startOfDay(d: LocalDate) = d.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
@@ -291,7 +308,7 @@ class PromptRenderer(
         val zoneSeconds = if (zones == null) emptyMap() else runs.mapNotNull { r ->
             zoneSeconds(r, zones)?.let { r.id to it }
         }.toMap()
-        return TrainingLoad.weekly(runs, weeks, zones, zoneSeconds)
+        return TrainingLoad.weekly(runs, weeks, zones, zoneSeconds, others = dao.otherWorkoutsSince(startOfDay(start)))
     }
 
     private suspend fun zoneSeconds(r: RunEntity, zones: HrZones.ZoneSet): DoubleArray? {
@@ -406,6 +423,7 @@ class PromptRenderer(
         private val WEEKLY = Regex("""\{\{weekly_summary(?::(\d+))?\}\}""")
         private val STATS = Regex("""\{\{running_stats(?::(\d+))?\}\}""")
         private val DYNAMICS = Regex("""\{\{dynamics(?::(\d+))?\}\}""")
+        private val RECOVERY = Regex("""\{\{recovery(?::(\d+))?\}\}""")
         private val PLAN = Regex("""\{\{plan_review(?::(\d+))?\}\}""")
         private val DATE_TIME: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
 
@@ -414,9 +432,11 @@ class PromptRenderer(
             {{language}} – reply language from Settings
             {{today}} – today's date
             {{run}} – the selected run: metrics, km splits (pace, HR, cadence, climb), pauses, HR zones, pace:HR drift
-            {{recent_runs}} – one line per session, last 28 days, with pauses and days since the previous one ({{recent_runs:56}} = 56 days)
+            {{recent_runs}} – one line per run, last 28 days, with pauses and rest days, then other training (strength, hikes, rides) ({{recent_runs:56}} = 56 days)
             {{weekly_summary}} – weekly totals (runs and walks apart), minutes per HR zone and load, last 12 weeks ({{weekly_summary:24}} = 24 weeks)
+            {{recovery}} – sleep score and stages, energy score and resting HR per day, last 14 days ({{recovery:28}} = 28 days)
             {{plan_review}} – your training plan next to what you recorded, last 4 weeks, plus the next 14 days of the plan ({{plan_review:8}} = 8 weeks)
+            {{planning}} – asks for suggestions for coming sessions, or tells the AI not to plan, following Settings → Training Plan
             {{dynamics}} – running form averages (cadence, contact time, oscillation, asymmetry…), last 90 days ({{dynamics:180}} = 180 days)
             {{running_stats}} – long-term stats, last 12 months: monthly totals, bests, easy-run pace/HR ({{running_stats:24}} = 24 months)
             {{baseline}} – your saved athlete baseline (also added automatically when "Use baseline" is on)
@@ -450,10 +470,65 @@ class PromptRenderer(
  * Adds {{plan_review}} after {{recent_runs}} to a training-review template written before that
  * placeholder existed. Returns null when there is nothing to change.
  */
-fun withPlanReview(userTemplate: String): String? {
-    if ("{{plan_review" in userTemplate) return null
+fun withPlanReview(userTemplate: String): String? = withAfterRecentRuns(userTemplate, "plan_review", "{{plan_review:4}}")
+
+/** The same for {{recovery}}. */
+fun withRecovery(userTemplate: String): String? = withAfterRecentRuns(userTemplate, "recovery", "{{recovery:14}}")
+
+private fun withAfterRecentRuns(userTemplate: String, tag: String, placeholder: String): String? {
+    if ("{{$tag" in userTemplate) return null
     val recent = Regex("""\{\{recent_runs(?::\d+)?\}\}""").find(userTemplate) ?: return null
-    return userTemplate.replaceRange(recent.range, "${recent.value}\n\n{{plan_review:4}}")
+    return userTemplate.replaceRange(recent.range, "${recent.value}\n\n$placeholder")
+}
+
+/** Whether analyses end with advice on coming sessions, or leave planning to the Plan tab. */
+object PlanningAdvice {
+    private const val PREFS = "ai_settings"
+    private const val KEY = "planInAnalyses"
+    const val PLACEHOLDER = "{{planning}}"
+    const val ON = "Finish with concrete suggestions for my coming sessions, with distances and target heart rates " +
+        "or paces. If a training plan is shown above, say what to change in it rather than writing a new one."
+    const val OFF = "Do not suggest coming sessions or write a training plan or schedule; I plan my sessions separately."
+
+    fun enabled(context: Context) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY, false)
+
+    fun setEnabled(context: Context, on: Boolean) =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(KEY, on).apply()
+
+    fun text(on: Boolean) = if (on) ON else OFF
+}
+
+/** A phrase as a pattern that still matches after the text was re-wrapped. */
+private fun phrase(text: String, suffix: String = "") =
+    Regex(text.trim().split(Regex("""\s+""")).joinToString("""\s+""") { Regex.escape(it) } + suffix)
+
+/** The planning requests the built-in prompts used to make, and what each becomes. */
+private val PLANNING_PARTS = listOf(
+    phrase("how this run fits my recent load, and 2–3 concrete suggestions for upcoming runs.") to
+        "and how this run fits my recent load.\n\n{{planning}}",
+    phrase("Be concrete, flag injury risk from sudden load jumps, and keep the plan realistic.") to
+        "Be concrete and flag injury risk from sudden load jumps.",
+    phrase("Then propose a plan for the next 7 days with distances and target heart rates or paces.") to "\n\n{{planning}}",
+    phrase(
+        "Then say what to change in the planned sessions for the next 7 days, with distances and target " +
+            "heart rates or paces. If no plan is saved, propose one for the next 7 days.",
+    ) to "\n\n{{planning}}",
+)
+
+/**
+ * Swaps the "suggest upcoming runs" and "propose a plan" requests in prompt text saved from the
+ * built-in prompts for {{planning}}, which follows the setting. Only the built-in wording is
+ * matched, so the user's own text stays. Returns null when there is nothing to change.
+ */
+fun withPlanningPlaceholder(text: String): String? {
+    val out = PLANNING_PARTS.fold(text) { acc, (pattern, replacement) ->
+        // The sentence before keeps its full stop; the blank line replaces the space after it.
+        Regex("""[ \t]*\n?[ \t]*""" + pattern.pattern).let { p ->
+            if (replacement.startsWith("\n")) p.replace(acc, Regex.escapeReplacement(replacement))
+            else pattern.replace(acc, Regex.escapeReplacement(replacement))
+        }
+    }
+    return out.takeIf { it != text }
 }
 
 /** Builds the athlete baseline; its answer is saved and reused by later analyses. */
@@ -582,15 +657,17 @@ val DEFAULT_PROMPTS = listOf(
             For context, my recent training:
             {{recent_runs:28}}
 
-            Cover: pacing and splits, heart-rate response and drift, cadence, how this run fits my
-            recent load, and 2–3 concrete suggestions for upcoming runs.
+            Cover: pacing and splits, heart-rate response and drift, cadence, and how this run fits my
+            recent load.
+
+            {{planning}}
         """.trimIndent(),
     ),
     PromptTemplateEntity(
         name = "Training review (last 4 weeks)",
         systemPrompt = """
             You are an experienced running coach. Review training load and progression from the data
-            given. Be concrete, flag injury risk from sudden load jumps, and keep the plan realistic.
+            given. Be concrete and flag injury risk from sudden load jumps.
             Reply in {{language}}.
         """.trimIndent(),
         userTemplate = """
@@ -603,13 +680,16 @@ val DEFAULT_PROMPTS = listOf(
 
             {{recent_runs:28}}
 
+            {{recovery:14}}
+
             {{plan_review:4}}
 
             Review my last 4 weeks against the 12-week trend: volume, intensity distribution
-            (minutes per heart-rate zone), weekly load changes, spacing between sessions,
-            long-run progression, VO2max trend, and how closely I followed my training plan.
-            Then say what to change in the planned sessions for the next 7 days, with distances
-            and target heart rates or paces. If no plan is saved, propose one for the next 7 days.
+            (minutes per heart-rate zone), weekly load changes including other training, spacing
+            between sessions, long-run progression, VO2max trend, whether my sleep, energy score
+            and resting heart rate show I am recovering, and how closely I followed my training plan.
+
+            {{planning}}
         """.trimIndent(),
     ),
 ) + SHOE_PROMPTS

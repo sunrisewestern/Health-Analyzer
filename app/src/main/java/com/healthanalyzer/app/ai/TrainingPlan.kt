@@ -185,7 +185,9 @@ object TodayRecap {
         app. Use only the plan, training and weather data given – never invent weather; if no
         forecast is given, say nothing about the weather. Be practical: when to run, how to dress,
         hydration, and whether to adjust pace or effort for heat, cold, wind or rain (or move the
-        session indoors). If today is a rest day, say so and suggest how to recover.
+        session indoors). If last night's sleep, the energy score or resting heart rate are clearly
+        worse than the athlete's usual, say so and ease the session. If today is a rest day, say so
+        and suggest how to recover.
         Format: simple Markdown, at most 5 short bullet points, under 110 words, no headings,
         no LaTeX. Reply in {{language}}.
     """.trimIndent()
@@ -227,6 +229,8 @@ object TodayRecap {
         appendLine()
         appendLine("Already recorded today: ${doneToday.ifBlank { "nothing yet" }}")
         appendLine("This week (Mon–Sun): planned %.1f km, done %.1f km so far.".format(weekPlannedKm, weekDoneKm))
+        appendLine()
+        appendLine("{{recovery:7}}")
         appendLine()
         appendLine(weather ?: "No weather forecast available.")
         appendLine()
@@ -286,6 +290,8 @@ object TrainingPlan {
         appendLine()
         appendLine("{{recent_runs:28}}")
         appendLine()
+        appendLine("{{recovery:14}}")
+        appendLine()
         appendLine("Today is $today (${weekday(today)}).")
         appendLine("My goal and constraints: ${request.goal.ifBlank { "No specific goal – improve general running fitness safely." }}")
         val firstMonday = period(today, request.weeks).first
@@ -339,6 +345,8 @@ object TrainingPlan {
         appendLine("{{athlete}}")
         appendLine()
         appendLine("{{recent_runs:14}}")
+        appendLine()
+        appendLine("{{recovery:7}}")
         appendLine()
         appendLine("Today is $today (${weekday(today)}).")
         if (goal.isNotBlank()) appendLine("My goal and constraints for this plan: ${goal.trim()}")

@@ -1,5 +1,8 @@
 package com.healthanalyzer.app.ai
 
+import com.healthanalyzer.app.data.DailyRecoveryEntity
+import com.healthanalyzer.app.data.HrHistogram
+import com.healthanalyzer.app.data.OtherWorkoutEntity
 import com.healthanalyzer.app.data.RunAnalysis
 import com.healthanalyzer.app.data.RunEntity
 import java.time.DayOfWeek
@@ -41,13 +44,26 @@ object TrainingLoad {
         zones: HrZones.ZoneSet?,
         zoneSeconds: Map<String, DoubleArray>,
         today: LocalDate = LocalDate.now(),
+        others: List<OtherWorkoutEntity> = emptyList(),
     ): String {
         val start = monday(today).minusWeeks((weeks - 1).toLong())
         val byWeek = runs.groupBy { monday(date(it)) }
+        val allOthers = others.filter { it.durationSec >= MIN_OTHER_SEC }
+        // Recorded walks join the walk columns; "other" is strength, hiking, cycling and the like.
+        val (otherWalks, shownOthers) = allOthers.partition { it.exerciseType == "WALKING" }
+        val walksByWeek = otherWalks.groupBy { monday(date(it)) }
+        val othersByWeek = shownOthers.groupBy { monday(date(it)) }
+        val allOthersByWeek = allOthers.groupBy { monday(date(it)) }
+        val otherZones = if (zones == null) emptyMap() else allOthers.mapNotNull { w -> zoneSeconds(w, zones)?.let { w.id to it } }.toMap()
         return buildString {
             appendLine("Weekly totals, last $weeks weeks (weeks start Monday; the last week is still in progress).")
             appendLine("Runs and walks are counted separately: $WALK_RULE.")
-            appendLine("week of | runs | run km | run time | avg run pace/km | avg run HR | longest run km | walks | walk km | walk time")
+            if (otherWalks.isNotEmpty()) appendLine("Walks also include sessions recorded as walks (15 minutes or longer).")
+            if (shownOthers.isNotEmpty()) appendLine("Other training is everything else recorded: strength, hiking, cycling and so on.")
+            appendLine(
+                "week of | runs | run km | run time | avg run pace/km | avg run HR | longest run km | walks | walk km | walk time" +
+                    if (shownOthers.isNotEmpty()) " | other sessions | other time" else "",
+            )
             for (i in 0 until weeks) {
                 val week = start.plusWeeks(i.toLong())
                 val (walks, real) = byWeek[week].orEmpty().partition { isWalk(it) }
@@ -62,28 +78,33 @@ object TrainingLoad {
                         if (dist > 0) RunAnalysis.formatPace(time / dist) else "–",
                         weightedHr(real)?.let { "%.0f".format(it) } ?: "–",
                         real.maxOfOrNull { km(it) }?.let { "%.1f".format(it) } ?: "–",
-                        walks.size.toString(),
-                        "%.1f".format(walks.sumOf { km(it) }),
-                        RunAnalysis.formatDuration(walks.sumOf { it.durationSec }),
+                        (walks.size + walksByWeek[week].orEmpty().size).toString(),
+                        "%.1f".format(walks.sumOf { km(it) } + walksByWeek[week].orEmpty().sumOf { (it.distanceM ?: 0f) / 1000.0 }),
+                        RunAnalysis.formatDuration(walks.sumOf { it.durationSec } + walksByWeek[week].orEmpty().sumOf { it.durationSec }),
+                    ).plus(
+                        if (shownOthers.isEmpty()) emptyList() else othersByWeek[week].orEmpty().let { o ->
+                            listOf(o.size.toString(), RunAnalysis.formatDuration(o.sumOf { it.durationSec }))
+                        },
                     ).joinToString(" | "),
                 )
             }
-            if (zones != null && zoneSeconds.isNotEmpty()) {
+            if (zones != null && (zoneSeconds.isNotEmpty() || otherZones.isNotEmpty())) {
                 appendLine()
-                appendLine("Weekly minutes in each heart-rate zone, runs and walks together (${zones.header.removePrefix("Time in HR zones ").trim('(', ')')}: ${zones.names.joinToString(" · ")}).")
+                appendLine("Weekly minutes in each heart-rate zone, ${if (otherZones.isEmpty()) "runs and walks together" else "all recorded training together"} (${zones.header.removePrefix("Time in HR zones ").trim('(', ')')}: ${zones.names.joinToString(" · ")}).")
                 appendLine("Load = Z1 min × 1 + Z2 × 2 + Z3 × 3 + Z4 × 4 + Z5 × 5.")
                 appendLine("week of | Z1 | Z2 | Z3 | Z4 | Z5 | load | load vs previous week | sessions with HR")
                 var previous: Double? = null
                 for (i in 0 until weeks) {
                     val week = start.plusWeeks(i.toLong())
-                    val list = byWeek[week].orEmpty()
-                    val withHr = list.mapNotNull { zoneSeconds[it.id] }
+                    val weekOthers = allOthersByWeek[week].orEmpty()
+                    val sessions = byWeek[week].orEmpty().size + weekOthers.size
+                    val withHr = byWeek[week].orEmpty().mapNotNull { zoneSeconds[it.id] } + weekOthers.mapNotNull { otherZones[it.id] }
                     val min = DoubleArray(5) { z -> withHr.sumOf { it[z] } / 60 }
                     val load = min.withIndex().sumOf { (z, m) -> m * (z + 1) }
                     val change = previous?.takeIf { it > 0 }?.let { "%+.0f%%".format((load - it) / it * 100) } ?: "–"
                     appendLine(
                         (listOf(week.toString()) + min.map { "%.0f".format(it) } +
-                            listOf("%.0f".format(load), change, "${withHr.size} of ${list.size}")).joinToString(" | "),
+                            listOf("%.0f".format(load), change, "${withHr.size} of $sessions")).joinToString(" | "),
                     )
                     previous = load
                 }
@@ -135,7 +156,9 @@ object TrainingLoad {
         weeks: Int,
         goal: String = "",
         today: LocalDate = LocalDate.now(),
+        others: List<OtherWorkoutEntity> = emptyList(),
     ): String {
+        val othersByDay = others.filter { it.durationSec >= MIN_OTHER_SEC }.groupBy { date(it) }
         val dated = plan.mapNotNull { w -> w.localDate?.let { it to w } }.sortedBy { it.first }
         if (dated.isEmpty()) return "(no training plan saved)"
         val runsByDay = runs.groupBy { date(it) }
@@ -159,15 +182,14 @@ object TrainingLoad {
                 while (day <= lastPast) {
                     val planned = planByDay[day].orEmpty()
                     val done = runsByDay[day].orEmpty().sortedBy { it.startEpochMs }
-                    if (planned.isNotEmpty() || done.isNotEmpty()) {
+                    val other = othersByDay[day].orEmpty().sortedBy { it.startEpochMs }
+                    if (planned.isNotEmpty() || done.isNotEmpty() || other.isNotEmpty()) {
                         if (planned.any { it.workoutType != WorkoutType.CROSS } && done.isNotEmpty()) matched++
                         appendLine(
                             listOf(
                                 dayLabel(day),
                                 planned.joinToString("; ") { workout(it) }.ifEmpty { "nothing planned" },
-                                done.joinToString("; ") { session(it) }.ifEmpty {
-                                    if (planned.all { it.workoutType == WorkoutType.CROSS }) "not tracked (only runs are synced)" else "nothing recorded"
-                                },
+                                (done.map { session(it) } + other.map { session(it) }).joinToString("; ").ifEmpty { "nothing recorded" },
                             ).joinToString(" | "),
                         )
                     }
@@ -176,7 +198,7 @@ object TrainingLoad {
                 val plannedRuns = past.map { it.second }.filter { it.workoutType != WorkoutType.CROSS }
                 val doneRuns = runs.filter { date(it) in from..lastPast }
                 appendLine(
-                    "Totals: sessions planned %d (%.1f km) · sessions recorded %d (%.1f km) · %d of %d planned days had a session recorded that day".format(
+                    "Totals: runs planned %d (%.1f km) · runs and walks recorded %d (%.1f km) · %d of %d planned run days had one recorded that day".format(
                         plannedRuns.size, plannedRuns.sumOf { (it.distanceKm ?: 0f).toDouble() },
                         doneRuns.size, doneRuns.sumOf { km(it) },
                         matched, plannedRuns.map { it.date }.distinct().size,
@@ -205,6 +227,148 @@ object TrainingLoad {
         r.meanHeartRate?.let { "avg HR %.0f".format(it) },
         r.maxHeartRate?.let { "max HR %.0f".format(it) },
     ).joinToString(", ")
+
+    private fun session(w: OtherWorkoutEntity): String = listOfNotNull(
+        "${otherLabel(w)} ${RunAnalysis.formatDuration(w.durationSec)}",
+        w.distanceM?.takeIf { it >= 100 }?.let { "%.1f km".format(it / 1000) },
+        w.meanHeartRate?.let { "avg HR %.0f".format(it) },
+    ).joinToString(", ")
+
+    /** Sessions shorter than this (mostly auto-detected strolls) are left out of the prompts. */
+    private const val MIN_OTHER_SEC = 15 * 60L
+
+    fun otherLabel(w: OtherWorkoutEntity): String {
+        val title = w.title?.trim().orEmpty()
+        return when {
+            w.sourceAppId.orEmpty().contains("hevy", ignoreCase = true) -> "Strength training" + if (title.isNotEmpty()) " ($title)" else ""
+            w.exerciseType == "OTHER" || w.exerciseType == "UNDEFINED" -> title.ifEmpty { "Other workout" }
+            w.exerciseType == "WALKING" -> "Walk"
+            w.exerciseType == "HIKING" -> "Hike"
+            w.exerciseType == "BIKING" -> "Bike ride"
+            else -> w.exerciseType.lowercase().replace('_', ' ').replaceFirstChar { it.uppercase() }
+        }
+    }
+
+    /** Seconds in each of the 5 zones from the workout's stored heart-rate histogram. */
+    fun zoneSeconds(w: OtherWorkoutEntity, zones: HrZones.ZoneSet): DoubleArray? {
+        val histogram = HrHistogram.decode(w.hrSeconds)
+        val secs = DoubleArray(5)
+        if (histogram.isEmpty()) {
+            // No heart-rate rows (some apps write only the average): count the whole session at its average.
+            val mean = w.meanHeartRate?.takeIf { it > 0 } ?: return null
+            secs[zones.starts.count { mean >= it }] = w.durationSec.toDouble()
+            return secs
+        }
+        histogram.forEach { (bpm, s) -> secs[zones.starts.count { bpm >= it }] += s }
+        return secs
+    }
+
+    /** One line per non-running session since [since]; empty when there are none. */
+    fun otherTraining(others: List<OtherWorkoutEntity>, days: Int, since: LocalDate): String {
+        val shown = others.filter { it.durationSec >= MIN_OTHER_SEC && !date(it).isBefore(since) }.sortedBy { it.startEpochMs }
+        if (shown.isEmpty()) return ""
+        val (walks, rest) = shown.partition { it.exerciseType == "WALKING" }
+        return buildString {
+            appendLine("Other training in the last $days days (not runs; sessions under 15 minutes left out):")
+            if (walks.isNotEmpty()) {
+                val hr = walks.mapNotNull { it.meanHeartRate }
+                appendLine(
+                    "Walks: %d sessions, %s in total, %.1f km%s".format(
+                        walks.size, RunAnalysis.formatDuration(walks.sumOf { it.durationSec }),
+                        walks.sumOf { (it.distanceM ?: 0f) / 1000.0 },
+                        if (hr.isNotEmpty()) ", avg HR %.0f".format(hr.average()) else "",
+                    ),
+                )
+            }
+            if (rest.isNotEmpty()) appendLine("date | type | time | km | avg HR | max HR | kcal")
+            rest.forEach { w ->
+                appendLine(
+                    listOf(
+                        localStart(w).format(DATE_TIME),
+                        otherLabel(w),
+                        RunAnalysis.formatDuration(w.durationSec),
+                        w.distanceM?.takeIf { it >= 100 }?.let { "%.1f".format(it / 1000) } ?: "–",
+                        w.meanHeartRate.fmt0(),
+                        w.maxHeartRate.fmt0(),
+                        w.calories?.takeIf { it > 0 }.fmt0(),
+                    ).joinToString(" | "),
+                )
+            }
+        }.trimEnd()
+    }
+
+    /**
+     * Sleep, energy score and resting heart rate per day for the last [days] days, with the
+     * last week set against the weeks before it. [rows] should reach back about 5 weeks.
+     */
+    fun recovery(rows: List<DailyRecoveryEntity>, days: Int, today: LocalDate = LocalDate.now()): String {
+        val byDate = rows.mapNotNull { r -> runCatching { LocalDate.parse(r.date) }.getOrNull()?.let { it to r } }.toMap()
+        val from = today.minusDays(days - 1L)
+        val shown = byDate.filterKeys { it in from..today }.toSortedMap()
+        if (shown.isEmpty()) return "(no sleep or recovery data synced for the last $days days)"
+        return buildString {
+            appendLine("Recovery, last $days days (from Samsung Health; sleep is the night before that morning; – = not recorded):")
+            appendLine("date | sleep score | time asleep (all sleeps) | deep | REM | awake | longest sleep, bedtime–wake | energy score | resting HR")
+            shown.forEach { (day, r) ->
+                appendLine(
+                    listOf(
+                        dayLabel(day),
+                        r.sleepScore?.toString() ?: "–",
+                        r.sleepMinutes.hm(),
+                        r.deepMinutes.hm(),
+                        r.remMinutes.hm(),
+                        r.awakeMinutes.hm(),
+                        if (r.bedtimeEpochMs != null && r.wakeEpochMs != null) "${clock(r.bedtimeEpochMs)}–${clock(r.wakeEpochMs)}" else "–",
+                        r.energyScore?.let { "%.0f".format(it) } ?: "–",
+                        r.restingHr?.toString() ?: "–",
+                    ).joinToString(" | "),
+                )
+            }
+            if (shown[today]?.restingHr != null) appendLine("(Today's resting HR is from the hours recorded so far.)")
+            fun mean(range: ClosedRange<LocalDate>, f: (DailyRecoveryEntity) -> Double?): Pair<Double, Int>? =
+                byDate.filterKeys { it in range }.values.mapNotNull(f).takeIf { it.size >= 3 }?.let { it.average() to it.size }
+            val week = today.minusDays(6)..today
+            val before = today.minusDays(34)..today.minusDays(7)
+            val lines = listOf<Triple<String, String, (DailyRecoveryEntity) -> Double?>>(
+                Triple("sleep score", "%.0f", { it.sleepScore?.toDouble() }),
+                Triple("time asleep", "h", { it.sleepMinutes?.toDouble() }),
+                Triple("energy score", "%.0f", { it.energyScore?.toDouble() }),
+                Triple("resting HR", "%.0f bpm", { it.restingHr?.toDouble() }),
+            ).mapNotNull { (name, fmt, f) ->
+                val a = mean(week, f) ?: return@mapNotNull null
+                val b = mean(before, f) ?: return@mapNotNull null
+                fun show(v: Double) = if (fmt == "h") Math.round(v).toInt().hm() else fmt.format(v)
+                "$name ${show(a.first)} (${a.second} days) vs ${show(b.first)} (${b.second} days)"
+            }
+            if (lines.isNotEmpty()) appendLine("Last 7 days vs the 4 weeks before: ${lines.joinToString(" · ")}")
+        }.trimEnd()
+    }
+
+    /** A short line on how recovered the athlete was on [day], for a single run's analysis. */
+    fun recoveryOn(day: LocalDate, rows: List<DailyRecoveryEntity>): String? {
+        val r = rows.firstOrNull { it.date == day.toString() } ?: return null
+        val parts = listOfNotNull(
+            r.sleepMinutes?.let { "slept ${it.hm()}" + (r.sleepScore?.let { s -> " (sleep score $s)" } ?: "") },
+            r.energyScore?.let { "energy score %.0f".format(it) },
+            r.restingHr?.let { "resting HR $it bpm" },
+        )
+        if (parts.isEmpty()) return null
+        val usual = rows.filter { it.date < day.toString() }
+        val context = listOfNotNull(
+            usual.mapNotNull { it.sleepScore }.takeIf { it.size >= 3 }?.let { "sleep score %.0f".format(it.average()) },
+            usual.mapNotNull { it.energyScore }.takeIf { it.size >= 3 }?.let { "energy score %.0f".format(it.average()) },
+            usual.mapNotNull { it.restingHr }.takeIf { it.size >= 3 }?.let { "resting HR %.0f bpm".format(it.average()) },
+        )
+        return "Recovery that day: ${parts.joinToString(", ")}" +
+            if (context.isNotEmpty()) ". Average of the 4 weeks before: ${context.joinToString(", ")}" else ""
+    }
+
+    private fun Int?.hm() = this?.let { "%d:%02d".format(it / 60, it % 60) } ?: "–"
+    private fun clock(epochMs: Long) = java.time.Instant.ofEpochMilli(epochMs).atZone(java.time.ZoneId.systemDefault())
+        .toLocalTime().format(DateTimeFormatter.ofPattern("HH:mm"))
+    private fun localStart(w: OtherWorkoutEntity) = java.time.Instant.ofEpochMilli(w.startEpochMs)
+        .atZone(w.zoneOffsetSec?.let { java.time.ZoneOffset.ofTotalSeconds(it) } ?: java.time.ZoneId.systemDefault()).toLocalDateTime()
+    private fun date(w: OtherWorkoutEntity) = localStart(w).toLocalDate()
 
     private fun dayLabel(d: LocalDate) = "$d ${d.dayOfWeek.getDisplayName(TextStyle.SHORT, Locale.ENGLISH)}"
     private fun monday(d: LocalDate) = d.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))

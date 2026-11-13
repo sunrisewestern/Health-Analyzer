@@ -623,6 +623,7 @@ private fun SubScreenHeader(
 private fun TrainingPlanSubScreen(vm: AiViewModel, listState: LazyListState, onBack: () -> Unit) {
     val settings by vm.recapSettings.collectAsStateWithLifecycle()
     val searching by vm.placeSearching.collectAsStateWithLifecycle()
+    val planInAnalyses by vm.planInAnalyses.collectAsStateWithLifecycle()
     var city by rememberSaveable(settings.place?.name) { mutableStateOf(settings.place?.name?.substringBefore(',').orEmpty()) }
 
     LazyColumn(
@@ -636,6 +637,29 @@ private fun TrainingPlanSubScreen(vm: AiViewModel, listState: LazyListState, onB
                 subtitle = "Options for the Plan tab.",
                 onBack = onBack,
             )
+        }
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
+            ) {
+                Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Planning advice in analyses", fontWeight = FontWeight.SemiBold)
+                        Text(
+                            "On: run analyses and training reviews end with suggestions for your coming sessions. " +
+                                "Off: they only review, and planning stays on the Plan tab. " +
+                                "Applies to prompts that contain {{planning}}.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Switch(checked = planInAnalyses, onCheckedChange = vm::setPlanInAnalyses)
+                }
+            }
         }
         item {
             Card(

@@ -541,11 +541,13 @@ val PROMPT_PLACEHOLDERS = listOf(
     PlaceholderItem("run", "{{run}}", "Target workout run: metrics, km splits, HR zones, drift"),
     PlaceholderItem("recent_runs", "{{recent_runs}}", "Recent sessions with pauses and rest days, last 28 days (or {{recent_runs:N}})"),
     PlaceholderItem("weekly_summary", "{{weekly_summary}}", "Weekly totals, HR-zone minutes and load, last 12 weeks (or {{weekly_summary:N}})"),
+    PlaceholderItem("recovery", "{{recovery}}", "Sleep, energy score and resting HR per day, last 14 days (or {{recovery:N}})"),
     PlaceholderItem("plan_review", "{{plan_review}}", "Training plan vs what you recorded, last 4 weeks (or {{plan_review:N}})"),
     PlaceholderItem("dynamics", "{{dynamics}}", "Running form averages: cadence, contact time, oscillation"),
     PlaceholderItem("running_stats", "{{running_stats}}", "Long-term monthly stats, bests, easy-run pace/HR"),
     PlaceholderItem("baseline", "{{baseline}}", "Saved athlete baseline profile"),
     PlaceholderItem("today", "{{today}}", "Today's date (yyyy-mm-dd)"),
+    PlaceholderItem("planning", "{{planning}}", "Asks for suggestions for coming sessions, or tells the AI not to plan (Settings → Training Plan)"),
     PlaceholderItem("language", "{{language}}", "Reply language configured in Settings"),
 )
 

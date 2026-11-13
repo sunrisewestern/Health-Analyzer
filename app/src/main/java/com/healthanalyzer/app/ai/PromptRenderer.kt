@@ -6,6 +6,9 @@ import com.healthanalyzer.app.data.RunDao
 import com.healthanalyzer.app.data.RunDetail
 import com.healthanalyzer.app.data.RunEntity
 import com.healthanalyzer.app.data.Sample
+import com.google.gson.Gson
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.time.DayOfWeek
 import java.time.Instant
 import java.time.LocalDate
@@ -128,11 +131,17 @@ data class Baseline(
  *  {{athlete}}            profile: max/resting HR, notes, goals
  *  {{language}}           reply language from the profile
  *  {{today}}              today's date
- *  {{run}}                the selected run in depth: metrics, km splits, HR zones, drift
- *  {{recent_runs}}        one line per run in the last 28 days ({{recent_runs:N}} for N days)
- *  {{weekly_summary}}     weekly totals for the last 12 weeks ({{weekly_summary:N}} for N weeks)
+ *  {{run}}                the selected run in depth: metrics, km splits, pauses, HR zones, drift
+ *  {{recent_runs}}        one line per session in the last 28 days ({{recent_runs:N}} for N days)
+ *  {{weekly_summary}}     weekly totals, HR-zone minutes and load, last 12 weeks ({{weekly_summary:N}} for N weeks)
+ *  {{plan_review}}        training plan vs recorded sessions, last 4 weeks ({{plan_review:N}} for N weeks)
  */
-class PromptRenderer(private val context: Context, private val dao: RunDao) {
+class PromptRenderer(
+    private val context: Context,
+    private val dao: RunDao,
+    /** Saved plan workouts between two ISO dates, inclusive; null where there is no plan store. */
+    private val planBetween: (suspend (String, String) -> List<PlanWorkoutEntity>)? = null,
+) {
 
     suspend fun render(template: String, run: RunDetail?): String {
         prepare(template)
@@ -158,6 +167,7 @@ class PromptRenderer(private val context: Context, private val dao: RunDao) {
             val weeks = m.groupValues[1].toIntOrNull() ?: 12
             weeklyBlocking(weeks)
         }
+        out = PLAN.replace(out) { m -> planCache[m.groupValues[1].toIntOrNull() ?: 4].orEmpty() }
         return out
     }
 
@@ -166,6 +176,10 @@ class PromptRenderer(private val context: Context, private val dao: RunDao) {
     private var weeklyCache: Map<Int, String> = emptyMap()
     private var statsCache: Map<Int, String> = emptyMap()
     private var dynamicsCache: Map<Int, String> = emptyMap()
+    private var planCache: Map<Int, String> = emptyMap()
+    /** Seconds per HR zone for a run, keyed by run, its last update and the zone limits. */
+    private val zoneSecondsCache = HashMap<String, DoubleArray?>()
+    private val gson = Gson()
     private fun recentRunsBlocking(days: Int) = recentCache[days].orEmpty()
     private fun weeklyBlocking(weeks: Int) = weeklyCache[weeks].orEmpty()
 
@@ -176,6 +190,8 @@ class PromptRenderer(private val context: Context, private val dao: RunDao) {
             .associateWith { weekly(it) }
         dynamicsCache = DYNAMICS.findAll(template).map { it.groupValues[1].toIntOrNull() ?: 90 }.distinct()
             .associateWith { dynamics(it) }
+        planCache = PLAN.findAll(template).map { it.groupValues[1].toIntOrNull() ?: 4 }.distinct()
+            .associateWith { planReview(it) }
         if (STATS.containsMatchIn(template)) {
             val profile = AthleteProfile.load(context)
             val maxHr = profile.maxHeartRate ?: dao.highestHeartRate()?.roundToInt()
@@ -213,30 +229,21 @@ class PromptRenderer(private val context: Context, private val dao: RunDao) {
     }
 
     private suspend fun recentRuns(days: Int): String {
-        val since = Instant.now().minus(days.toLong(), ChronoUnit.DAYS).toEpochMilli()
-        val runs = dao.runsSince(since)
-        if (runs.isEmpty()) return "(no runs in the last $days days)"
-        return buildString {
-            appendLine("Runs in the last $days days (${runs.size}):")
-            appendLine("date | type | km | time | pace/km | avg HR | max HR | cadence | elev+ m | VO2max")
-            runs.forEach { r ->
-                appendLine(
-                    listOf(
-                        localStart(r).format(DATE_TIME),
-                        typeLabel(r.exerciseType),
-                        km(r),
-                        RunAnalysis.formatDuration(r.durationSec),
-                        RunAnalysis.formatPace(pace(r)),
-                        r.meanHeartRate.fmt0(),
-                        r.maxHeartRate.fmt0(),
-                        r.meanCadence.fmt0(),
-                        r.altitudeGain.fmt0(),
-                        r.vo2Max?.let { "%.1f".format(it) } ?: "–",
-                    ).joinToString(" | "),
-                )
-            }
-        }.trimEnd()
+        val since = LocalDate.now().minusDays(days.toLong())
+        // Reach back further so the first line can say how long the break before it was.
+        val runs = dao.runsSince(startOfDay(since.minusDays(60)))
+        return TrainingLoad.recentRuns(runs, days, since)
     }
+
+    private suspend fun planReview(weeks: Int): String {
+        val today = LocalDate.now()
+        val from = today.minusWeeks(weeks.toLong())
+        val plan = planBetween?.invoke(from.toString(), today.plusDays(14).toString()).orEmpty()
+        if (plan.isEmpty()) return "(no training plan saved)"
+        return TrainingLoad.planReview(plan, dao.runsSince(startOfDay(from)), weeks, PlanInfo.load(context).goal, today)
+    }
+
+    private fun startOfDay(d: LocalDate) = d.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
 
     /**
      * Running-form averages per run type over the last [days] days, for shoe and technique
@@ -278,32 +285,24 @@ class PromptRenderer(private val context: Context, private val dao: RunDao) {
     private suspend fun weekly(weeks: Int): String {
         val start = LocalDate.now().with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))
             .minusWeeks((weeks - 1).toLong())
-        val runs = dao.runsSince(start.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli())
-        val byWeek = runs.groupBy { localStart(it).toLocalDate().with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY)) }
-        return buildString {
-            appendLine("Weekly totals, last $weeks weeks (weeks start Monday):")
-            appendLine("week of | runs | km | time | avg pace/km | avg HR | longest km")
-            for (i in 0 until weeks) {
-                val week = start.plusWeeks(i.toLong())
-                val list = byWeek[week].orEmpty()
-                val dist = list.sumOf { (it.distanceM ?: 0f).toDouble() }
-                val time = list.sumOf { it.durationSec }
-                val hrList = list.mapNotNull { r -> r.meanHeartRate?.let { it to r.durationSec } }
-                val avgHr = if (hrList.isEmpty()) null else
-                    hrList.sumOf { (hr, t) -> hr.toDouble() * t } / hrList.sumOf { it.second }.coerceAtLeast(1)
-                appendLine(
-                    listOf(
-                        week.toString(),
-                        list.size.toString(),
-                        "%.1f".format(dist / 1000),
-                        RunAnalysis.formatDuration(time),
-                        if (dist > 0) RunAnalysis.formatPace(time / dist * 1000) else "–",
-                        avgHr?.let { "%.0f".format(it) } ?: "–",
-                        list.maxOfOrNull { (it.distanceM ?: 0f) / 1000 }?.let { "%.1f".format(it) } ?: "–",
-                    ).joinToString(" | "),
-                )
-            }
-        }.trimEnd()
+        val runs = dao.runsSince(startOfDay(start))
+        val profile = AthleteProfile.load(context)
+        val zones = HrZones.zones(profile.activeCustomZones, profile.maxHeartRate ?: dao.highestHeartRate()?.roundToInt())
+        val zoneSeconds = if (zones == null) emptyMap() else runs.mapNotNull { r ->
+            zoneSeconds(r, zones)?.let { r.id to it }
+        }.toMap()
+        return TrainingLoad.weekly(runs, weeks, zones, zoneSeconds)
+    }
+
+    private suspend fun zoneSeconds(r: RunEntity, zones: HrZones.ZoneSet): DoubleArray? {
+        if (r.sampleCount == 0) return null
+        return zoneSecondsCache.getOrPut("${r.id}|${r.updatedEpochMs}|${r.sampleCount}|${zones.starts}") {
+            val json = dao.getDetail(r.id)?.samplesJson ?: return@getOrPut null
+            val samples = withContext(Dispatchers.Default) {
+                runCatching { gson.fromJson(json, Array<Sample>::class.java).toList() }.getOrNull()
+            } ?: return@getOrPut null
+            HrZones.seconds(samples, zones)
+        }
     }
 
     private fun runDetail(d: RunDetail, maxHr: Int?): String {
@@ -336,39 +335,69 @@ class PromptRenderer(private val context: Context, private val dao: RunDao) {
             r.sweatLossMl?.let { appendLine("Estimated sweat loss: %.0f ml".format(it)) }
             appendLine("Data source: ${if (r.sourceOrDefault == com.healthanalyzer.app.data.SOURCE_GARMIN_FIT) "Garmin (FIT file)" else "Samsung Health"}")
 
-            val splits = RunAnalysis.splits(d.samples, r.distanceM)
+            val breakdown = RunAnalysis.breakdown(d.samples, d.route, r.distanceM)
+            val splits = breakdown.splits
             if (splits.isNotEmpty()) {
+                val hasElevation = splits.any { it.elevationGainM != null }
+                val hasPower = splits.any { it.meanPower != null }
+                val hasPauses = breakdown.pauses.isNotEmpty()
                 appendLine()
-                appendLine("Km splits (km | pace | avg HR | cadence):")
+                appendLine(
+                    "Km splits, moving time only (km | pace | time | avg HR | max HR | cadence | step length m" +
+                        (if (hasPower) " | power W" else "") +
+                        (if (hasElevation) " | climb/descent m" else "") +
+                        (if (hasPauses) " | paused" else "") + "):",
+                )
                 splits.forEach { s ->
                     val label = if (s.distanceM >= 999) "${s.index}" else "${s.index} (%.2f km)".format(s.distanceM / 1000)
-                    appendLine("$label | ${RunAnalysis.formatPace(s.paceSecPerKm)} | ${s.meanHeartRate.fmt0()} | ${s.meanCadence.fmt0()}")
+                    appendLine(
+                        listOfNotNull(
+                            label,
+                            RunAnalysis.formatPace(s.paceSecPerKm),
+                            RunAnalysis.formatDuration(s.durationSec.roundToInt().toLong()),
+                            s.meanHeartRate.fmt0(),
+                            s.maxHeartRate.fmt0(),
+                            s.meanCadence.fmt0(),
+                            s.stepLengthM?.let { "%.2f".format(it) } ?: "–",
+                            if (hasPower) s.meanPower.fmt0() else null,
+                            if (hasElevation) "+%.0f/−%.0f".format(s.elevationGainM ?: 0.0, s.elevationLossM ?: 0.0) else null,
+                            if (hasPauses) (if (s.pausedSec > 0) RunAnalysis.formatDuration(s.pausedSec.roundToInt().toLong()) else "–") else null,
+                        ).joinToString(" | "),
+                    )
+                }
+                if (hasElevation) {
+                    appendLine("(Climb/descent per km comes from the smoothed altitude track, so it adds up to less than the watch's total gain.)")
+                }
+                if (hasPauses) {
+                    appendLine()
+                    val total = breakdown.pauses.sumOf { it.durationSec }.roundToInt().toLong()
+                    appendLine("Pauses (${breakdown.pauses.size}, total ${RunAnalysis.formatDuration(total)}; at km | length | HR before → HR at restart):")
+                    breakdown.pauses.forEach { p ->
+                        appendLine(
+                            "%.2f | %s | %s → %s".format(
+                                p.atDistanceM / 1000,
+                                RunAnalysis.formatDuration(p.durationSec.roundToInt().toLong()),
+                                p.hrBefore.fmt0(),
+                                p.hrAfter.fmt0(),
+                            ),
+                        )
+                    }
                 }
             }
             HrZones.timeInZones(d.samples, AthleteProfile.load(context).activeCustomZones, maxHr)
                 ?.let { appendLine(); appendLine(it) }
-            drift(d.samples)?.let { appendLine(); appendLine(it) }
+            drift(d.samples, r.distanceM)?.let { appendLine(); appendLine(it) }
         }.trimEnd()
     }
 
-    /** Aerobic decoupling: change in speed-per-heartbeat between the first and second half. */
-    private fun drift(samples: List<Sample>): String? {
-        val sorted = samples.sortedBy { it.t }
-        if (sorted.size < 20) return null
-        val mid = (sorted.first().t + sorted.last().t) / 2
-        fun ef(part: List<Sample>): Pair<Double, Double>? {
-            val sp = part.mapNotNull { it.speed?.toDouble() }.filter { it > 0.5 }
-            val hr = part.mapNotNull { it.hr?.toDouble() }.filter { it > 0 }
-            if (sp.isEmpty() || hr.isEmpty()) return null
-            return sp.average() to hr.average()
-        }
-        val a = ef(sorted.filter { it.t < mid }) ?: return null
-        val b = ef(sorted.filter { it.t >= mid }) ?: return null
-        val ef1 = a.first / a.second
-        val ef2 = b.first / b.second
+    /** Aerobic decoupling: change in speed-per-heartbeat between the two halves of the moving time. */
+    private fun drift(samples: List<Sample>, distanceM: Float?): String? {
+        val (a, b) = RunAnalysis.halves(samples, distanceM) ?: return null
+        val ef1 = 1 / a.paceSecPerKm / a.meanHeartRate
+        val ef2 = 1 / b.paceSecPerKm / b.meanHeartRate
         val decoupling = (ef1 - ef2) / ef1 * 100
-        return "First half: ${RunAnalysis.formatPace(1000 / a.first)}/km at ${a.second.roundToInt()} bpm · " +
-            "Second half: ${RunAnalysis.formatPace(1000 / b.first)}/km at ${b.second.roundToInt()} bpm · " +
+        return "First half of moving time: ${RunAnalysis.formatPace(a.paceSecPerKm)}/km at ${a.meanHeartRate.roundToInt()} bpm · " +
+            "Second half: ${RunAnalysis.formatPace(b.paceSecPerKm)}/km at ${b.meanHeartRate.roundToInt()} bpm · " +
             "Pace:HR decoupling ${"%.1f".format(decoupling)}%"
     }
 
@@ -377,15 +406,17 @@ class PromptRenderer(private val context: Context, private val dao: RunDao) {
         private val WEEKLY = Regex("""\{\{weekly_summary(?::(\d+))?\}\}""")
         private val STATS = Regex("""\{\{running_stats(?::(\d+))?\}\}""")
         private val DYNAMICS = Regex("""\{\{dynamics(?::(\d+))?\}\}""")
+        private val PLAN = Regex("""\{\{plan_review(?::(\d+))?\}\}""")
         private val DATE_TIME: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
 
         val PLACEHOLDER_HELP = """
             {{athlete}} – max/resting HR, notes and goals from Settings
             {{language}} – reply language from Settings
             {{today}} – today's date
-            {{run}} – the selected run: metrics, km splits, HR zones, pace:HR drift
-            {{recent_runs}} – one line per run, last 28 days ({{recent_runs:56}} = 56 days)
-            {{weekly_summary}} – weekly totals, last 12 weeks ({{weekly_summary:24}} = 24 weeks)
+            {{run}} – the selected run: metrics, km splits (pace, HR, cadence, climb), pauses, HR zones, pace:HR drift
+            {{recent_runs}} – one line per session, last 28 days, with pauses and days since the previous one ({{recent_runs:56}} = 56 days)
+            {{weekly_summary}} – weekly totals (runs and walks apart), minutes per HR zone and load, last 12 weeks ({{weekly_summary:24}} = 24 weeks)
+            {{plan_review}} – your training plan next to what you recorded, last 4 weeks, plus the next 14 days of the plan ({{plan_review:8}} = 8 weeks)
             {{dynamics}} – running form averages (cadence, contact time, oscillation, asymmetry…), last 90 days ({{dynamics:180}} = 180 days)
             {{running_stats}} – long-term stats, last 12 months: monthly totals, bests, easy-run pace/HR ({{running_stats:24}} = 24 months)
             {{baseline}} – your saved athlete baseline (also added automatically when "Use baseline" is on)
@@ -413,6 +444,16 @@ class PromptRenderer(private val context: Context, private val dao: RunDao) {
 
         private fun Float?.fmt0() = this?.let { "%.0f".format(it) } ?: "–"
     }
+}
+
+/**
+ * Adds {{plan_review}} after {{recent_runs}} to a training-review template written before that
+ * placeholder existed. Returns null when there is nothing to change.
+ */
+fun withPlanReview(userTemplate: String): String? {
+    if ("{{plan_review" in userTemplate) return null
+    val recent = Regex("""\{\{recent_runs(?::\d+)?\}\}""").find(userTemplate) ?: return null
+    return userTemplate.replaceRange(recent.range, "${recent.value}\n\n{{plan_review:4}}")
 }
 
 /** Builds the athlete baseline; its answer is saved and reused by later analyses. */
@@ -562,9 +603,13 @@ val DEFAULT_PROMPTS = listOf(
 
             {{recent_runs:28}}
 
+            {{plan_review:4}}
+
             Review my last 4 weeks against the 12-week trend: volume, intensity distribution
-            (easy vs hard by heart rate), consistency, long-run progression, VO2max trend. Then
-            propose a plan for the next 7 days with distances and target heart rates or paces.
+            (minutes per heart-rate zone), weekly load changes, spacing between sessions,
+            long-run progression, VO2max trend, and how closely I followed my training plan.
+            Then say what to change in the planned sessions for the next 7 days, with distances
+            and target heart rates or paces. If no plan is saved, propose one for the next 7 days.
         """.trimIndent(),
     ),
 ) + SHOE_PROMPTS

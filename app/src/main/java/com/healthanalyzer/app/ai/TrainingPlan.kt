@@ -64,7 +64,14 @@ data class PlanWorkoutEntity(
 }
 
 /** What the athlete asked for in the plan dialog. */
-data class PlanRequest(val goal: String, val weeks: Int, val runsPerWeek: Int)
+data class PlanRequest(
+    val goal: String,
+    /** Whole Monday–Sunday weeks to plan. */
+    val weeks: Int,
+    val runsPerWeek: Int,
+    /** Also plan the days left in the current week, before the first whole week. */
+    val fromToday: Boolean = false,
+)
 
 /** The current plan's request and the coach's summary, kept in the "ai_settings" preferences. */
 data class PlanInfo(
@@ -247,8 +254,27 @@ object TrainingPlan {
         before or after it.
     """.trimIndent()
 
-    /** User message with {{placeholders}} for [PromptRenderer]. */
-    fun userTemplate(request: PlanRequest, start: LocalDate, end: LocalDate): String = buildString {
+    /**
+     * The dates a plan covers: [weeks] whole Monday–Sunday weeks, starting this Monday when today
+     * is a Monday and next Monday otherwise. With [fromToday] the days left in the current week
+     * are planned as well.
+     */
+    fun period(today: LocalDate, weeks: Int, fromToday: Boolean = false): Pair<LocalDate, LocalDate> {
+        val firstMonday = today.with(java.time.temporal.TemporalAdjusters.nextOrSame(java.time.DayOfWeek.MONDAY))
+        return (if (fromToday) today else firstMonday) to firstMonday.plusWeeks(weeks.toLong()).minusDays(1)
+    }
+
+    /**
+     * User message with {{placeholders}} for [PromptRenderer]. [kept] are sessions already on the
+     * calendar between [today] and [start] that stay as they are.
+     */
+    fun userTemplate(
+        request: PlanRequest,
+        today: LocalDate,
+        start: LocalDate,
+        end: LocalDate,
+        kept: List<PlanWorkoutEntity> = emptyList(),
+    ): String = buildString {
         appendLine("Athlete:")
         appendLine("{{athlete}}")
         appendLine()
@@ -260,42 +286,144 @@ object TrainingPlan {
         appendLine()
         appendLine("{{recent_runs:28}}")
         appendLine()
-        appendLine("Today is $start (${weekday(start)}).")
+        appendLine("Today is $today (${weekday(today)}).")
         appendLine("My goal and constraints: ${request.goal.ifBlank { "No specific goal – improve general running fitness safely." }}")
-        appendLine("Write my running plan for ${request.weeks} week(s), from $start to $end inclusive, with about ${request.runsPerWeek} runs per week.")
-        appendLine("If I already ran today (see the runs above), start tomorrow.")
+        val firstMonday = period(today, request.weeks).first
+        appendLine(
+            "Write my running plan for ${request.weeks} whole week(s), Monday to Sunday, from $firstMonday to $end inclusive, " +
+                "with about ${request.runsPerWeek} runs in each week.",
+        )
+        if (start.isBefore(firstMonday)) {
+            appendLine(
+                "Also plan the rest of the current week, $start to ${firstMonday.minusDays(1)}: add only as many runs there as fit " +
+                    "with what I already ran this week (see the runs above), and if I already ran today, start tomorrow.",
+            )
+        } else if (today.isBefore(start)) {
+            appendLine("Do not plan anything before $start. Take what I run until then into account.")
+            if (kept.isNotEmpty()) {
+                appendLine("Already on my calendar before $start (these stay as they are):")
+                kept.forEach { appendLine("${weekday(LocalDate.parse(it.date))} ${it.date}: ${describe(it)}") }
+            }
+        }
         appendLine()
         appendLine("Dates in the plan period (use exactly these, the weekdays are correct):")
+        append(dateList(start, end))
+        appendLine()
+        appendLine(JSON_SHAPE)
+    }.trimEnd()
+
+    val REVISE_SYSTEM = """
+        You are the athlete's running coach. They already have a training plan and ask you to
+        change it. Change only what the request needs and keep the rest of the plan as it is. Keep
+        the plan safe: most running easy, no two hard sessions on consecutive days, no sudden jump
+        in weekly distance; if a moved session would break that, adjust its neighbours and say so.
+        If the athlete only asks a question, answer it and return the plan unchanged.
+        Your whole reply must be one JSON object and nothing else – no Markdown fences, no text
+        before or after it.
+    """.trimIndent()
+
+    /**
+     * User message asking for a changed plan. [current] are the sessions planned in [start]..[end];
+     * [earlier] are the athlete's earlier requests in this conversation, already applied.
+     */
+    fun reviseTemplate(
+        request: String,
+        today: LocalDate,
+        start: LocalDate,
+        end: LocalDate,
+        current: List<PlanWorkoutEntity>,
+        goal: String = "",
+        earlier: List<String> = emptyList(),
+    ): String = buildString {
+        appendLine("Athlete:")
+        appendLine("{{athlete}}")
+        appendLine()
+        appendLine("{{recent_runs:14}}")
+        appendLine()
+        appendLine("Today is $today (${weekday(today)}).")
+        if (goal.isNotBlank()) appendLine("My goal and constraints for this plan: ${goal.trim()}")
+        appendLine()
+        appendLine("My current plan from $start to $end (days not listed are rest days):")
+        appendLine(toJson(current))
+        appendLine()
+        if (earlier.isNotEmpty()) {
+            appendLine("Changes I asked for earlier in this conversation (already in the plan above, keep them):")
+            earlier.forEach { appendLine("- ${it.trim()}") }
+            appendLine()
+        }
+        appendLine("What I want changed now: ${request.trim()}")
+        appendLine()
+        appendLine("Dates you may use (the weekdays are correct):")
+        append(dateList(start, end))
+        appendLine()
+        appendLine(
+            """
+            Reply with one JSON object in exactly this shape:
+            {
+              "summary": "Under 80 words, written in {{language}}: what you changed and why, or the answer to my question.",
+              "workouts": [ the complete plan from $start to $end after the change, every session in the same fields as above ]
+            }
+            Rules: return every session of the plan, changed or not, sorted by date; leave rest days
+            out; copy unchanged sessions exactly; write title, target and notes in {{language}}.
+            """.trimIndent(),
+        )
+    }.trimEnd()
+
+    /** The plan in the same JSON fields the model is asked to reply with. */
+    fun toJson(workouts: List<PlanWorkoutEntity>): String {
+        val array = JsonArray()
+        workouts.sortedBy { it.date }.forEach { w ->
+            array.add(
+                JsonObject().apply {
+                    addProperty("date", w.date)
+                    addProperty("weekday", w.localDate?.let(::weekday))
+                    addProperty("type", w.workoutType.name.lowercase())
+                    addProperty("title", w.title)
+                    addProperty("distance_km", w.distanceKm)
+                    addProperty("duration_min", w.durationMin)
+                    addProperty("target", w.target)
+                    addProperty("notes", w.notes)
+                },
+            )
+        }
+        return com.google.gson.GsonBuilder().setPrettyPrinting().disableHtmlEscaping().create().toJson(array)
+    }
+
+    private fun describe(w: PlanWorkoutEntity) = listOfNotNull(
+        w.title.ifBlank { w.workoutType.label },
+        w.distanceKm?.let { "$it km" },
+        w.target.takeIf { it.isNotBlank() },
+    ).joinToString(", ")
+
+    private fun dateList(start: LocalDate, end: LocalDate) = buildString {
         var d = start
         while (!d.isAfter(end)) {
             append(weekday(d)).append(' ').append(d)
             append(if (d.dayOfWeek == java.time.DayOfWeek.SUNDAY || d == end) "\n" else ", ")
             d = d.plusDays(1)
         }
-        appendLine()
-        appendLine(
-            """
-            Reply with one JSON object in exactly this shape:
+    }
+
+    private val JSON_SHAPE = """
+        Reply with one JSON object in exactly this shape:
+        {
+          "summary": "Markdown, under 200 words: the plan's logic, weekly km progression, key sessions, and what to watch. Written in {{language}}.",
+          "workouts": [
             {
-              "summary": "Markdown, under 200 words: the plan's logic, weekly km progression, key sessions, and what to watch. Written in {{language}}.",
-              "workouts": [
-                {
-                  "date": "YYYY-MM-DD",
-                  "type": "easy | long | tempo | intervals | recovery | race | cross",
-                  "title": "short name, e.g. Easy 8 km",
-                  "distance_km": 8.0,
-                  "duration_min": 50,
-                  "target": "target pace and heart rate, e.g. 6'10\"–6'30\"/km · HR 135–145",
-                  "notes": "how to run it: warm-up, repetitions and recoveries, cool-down, purpose"
-                }
-              ]
+              "date": "YYYY-MM-DD",
+              "type": "easy | long | tempo | intervals | recovery | race | cross",
+              "title": "short name, e.g. Easy 8 km",
+              "distance_km": 8.0,
+              "duration_min": 50,
+              "target": "target pace and heart rate, e.g. 6'10\"–6'30\"/km · HR 135–145",
+              "notes": "how to run it: warm-up, repetitions and recoveries, cool-down, purpose"
             }
-            Rules: one entry per training day, sorted by date; leave rest days out; distance_km is the
-            session's total distance as a number (null for cross-training); write title, target and
-            notes in {{language}}; keep each notes field under 60 words.
-            """.trimIndent(),
-        )
-    }.trimEnd()
+          ]
+        }
+        Rules: one entry per training day, sorted by date; leave rest days out; distance_km is the
+        session's total distance as a number (null for cross-training); write title, target and
+        notes in {{language}}; keep each notes field under 60 words.
+    """.trimIndent()
 
     private fun weekday(d: LocalDate) = d.dayOfWeek.getDisplayName(TextStyle.SHORT, Locale.ENGLISH)
 

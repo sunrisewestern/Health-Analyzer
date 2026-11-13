@@ -539,8 +539,9 @@ data class PlaceholderItem(
 val PROMPT_PLACEHOLDERS = listOf(
     PlaceholderItem("athlete", "{{athlete}}", "Max/resting HR, notes and goals from Settings"),
     PlaceholderItem("run", "{{run}}", "Target workout run: metrics, km splits, HR zones, drift"),
-    PlaceholderItem("recent_runs", "{{recent_runs}}", "Recent runs, last 28 days (or {{recent_runs:N}})"),
-    PlaceholderItem("weekly_summary", "{{weekly_summary}}", "Weekly totals, last 12 weeks (or {{weekly_summary:N}})"),
+    PlaceholderItem("recent_runs", "{{recent_runs}}", "Recent sessions with pauses and rest days, last 28 days (or {{recent_runs:N}})"),
+    PlaceholderItem("weekly_summary", "{{weekly_summary}}", "Weekly totals, HR-zone minutes and load, last 12 weeks (or {{weekly_summary:N}})"),
+    PlaceholderItem("plan_review", "{{plan_review}}", "Training plan vs what you recorded, last 4 weeks (or {{plan_review:N}})"),
     PlaceholderItem("dynamics", "{{dynamics}}", "Running form averages: cadence, contact time, oscillation"),
     PlaceholderItem("running_stats", "{{running_stats}}", "Long-term monthly stats, bests, easy-run pace/HR"),
     PlaceholderItem("baseline", "{{baseline}}", "Saved athlete baseline profile"),

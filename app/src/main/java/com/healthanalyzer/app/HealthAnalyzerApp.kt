@@ -13,5 +13,5 @@ class HealthAnalyzerApp : Application() {
     val repository by lazy { RunRepository(database.runDao(), samsungHealth) }
     val aiDatabase by lazy { AiDatabase.create(this) }
     val garmin by lazy { com.healthanalyzer.app.data.GarminConnection(this) }
-    val promptRenderer by lazy { PromptRenderer(this, database.runDao()) }
+    val promptRenderer by lazy { PromptRenderer(this, database.runDao()) { from, to -> aiDatabase.aiDao().planBetween(from, to) } }
 }

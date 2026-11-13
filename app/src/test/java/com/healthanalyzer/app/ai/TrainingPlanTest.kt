@@ -68,13 +68,63 @@ class TrainingPlanTest {
     }
 
     @Test
+    fun periodIsWholeWeeksFromMonday() {
+        val thursday = LocalDate.of(2026, 11, 12)
+        assertEquals(LocalDate.of(2026, 11, 16) to LocalDate.of(2026, 11, 22), TrainingPlan.period(thursday, 1))
+        assertEquals(LocalDate.of(2026, 11, 16) to LocalDate.of(2026, 12, 6), TrainingPlan.period(thursday, 3))
+        assertEquals(thursday to LocalDate.of(2026, 11, 22), TrainingPlan.period(thursday, 1, fromToday = true))
+        val monday = LocalDate.of(2026, 11, 9)
+        assertEquals(monday to LocalDate.of(2026, 11, 15), TrainingPlan.period(monday, 1))
+        val sunday = LocalDate.of(2026, 11, 15)
+        assertEquals(LocalDate.of(2026, 11, 16) to LocalDate.of(2026, 11, 22), TrainingPlan.period(sunday, 1))
+    }
+
+    @Test
     fun promptListsEveryDateWithItsWeekday() {
-        val prompt = TrainingPlan.userTemplate(PlanRequest("Sub-55 10 km", 2, 4), start, end)
+        val prompt = TrainingPlan.userTemplate(PlanRequest("Sub-55 10 km", 2, 4), start, start, end)
         assertTrue("Mon 2026-11-09, Tue 2026-11-10" in prompt)
         assertTrue("Sun 2026-11-22\n" in prompt)
         assertTrue("2026-11-23" !in prompt)
-        assertTrue("from 2026-11-09 to 2026-11-22 inclusive, with about 4 runs per week" in prompt)
+        assertTrue(prompt, "2 whole week(s), Monday to Sunday, from 2026-11-09 to 2026-11-22 inclusive, with about 4 runs in each week" in prompt)
         assertTrue("{{recent_runs:28}}" in prompt && "{{language}}" in prompt)
+    }
+
+    @Test
+    fun promptFromMidWeekStartsNextMondayAndShowsWhatStays() {
+        val thursday = LocalDate.of(2026, 11, 12)
+        val (from, to) = TrainingPlan.period(thursday, 1)
+        val kept = listOf(PlanWorkoutEntity(date = "2026-11-13", type = "EASY", title = "Easy 3.5 km", distanceKm = 3.5f))
+        val prompt = TrainingPlan.userTemplate(PlanRequest("", 1, 3), thursday, from, to, kept)
+        assertTrue(prompt, "Today is 2026-11-12 (Thu)." in prompt)
+        assertTrue(prompt, "Do not plan anything before 2026-11-16" in prompt)
+        assertTrue(prompt, "Fri 2026-11-13: Easy 3.5 km, 3.5 km" in prompt)
+        assertTrue(prompt, "Mon 2026-11-16, Tue 2026-11-17" in prompt)
+        assertTrue(prompt, "Sat 2026-11-14" !in prompt)
+
+        val (fromToday, _) = TrainingPlan.period(thursday, 1, fromToday = true)
+        val withRest = TrainingPlan.userTemplate(PlanRequest("", 1, 3, fromToday = true), thursday, fromToday, to)
+        assertTrue(withRest, "Also plan the rest of the current week, 2026-11-12 to 2026-11-15" in withRest)
+        assertTrue(withRest, "Thu 2026-11-12, Fri 2026-11-13" in withRest)
+    }
+
+    @Test
+    fun revisePromptCarriesThePlanAndItsAnswerParsesBack() {
+        val plan = listOf(
+            PlanWorkoutEntity(date = "2026-11-13", type = "EASY", title = "Easy 3.5 km", distanceKm = 3.5f, durationMin = 22, target = "HR < 141", notes = "relaxed"),
+            PlanWorkoutEntity(date = "2026-11-15", type = "LONG", title = "Long 4.5 km", distanceKm = 4.5f),
+        )
+        val thursday = LocalDate.of(2026, 11, 12)
+        val sunday = LocalDate.of(2026, 11, 15)
+        val prompt = TrainingPlan.reviseTemplate("Dinner on Friday, move that run", thursday, thursday, sunday, plan, "Sub-2:00 half", listOf("Shorter long run"))
+        assertTrue(prompt, "What I want changed now: Dinner on Friday, move that run" in prompt)
+        assertTrue(prompt, "- Shorter long run" in prompt)
+        assertTrue(prompt, "\"date\": \"2026-11-13\"" in prompt && "\"weekday\": \"Fri\"" in prompt)
+        assertTrue(prompt, "Thu 2026-11-12, Fri 2026-11-13, Sat 2026-11-14, Sun 2026-11-15" in prompt)
+
+        // The JSON given to the model is in the shape it must answer with.
+        val back = TrainingPlan.parse("""{"summary": "moved", "workouts": ${TrainingPlan.toJson(plan)}}""", thursday, sunday)
+        assertEquals(plan.map { it.copy(createdEpochMs = 0) }, back.workouts)
+        assertEquals("moved", back.summary)
     }
 
     @Test

@@ -14,6 +14,7 @@ import com.healthanalyzer.app.ai.CodexAuth
 import com.healthanalyzer.app.ai.Baseline
 import com.healthanalyzer.app.ai.DEFAULT_PROMPTS
 import com.healthanalyzer.app.ai.SHOE_PROMPTS
+import com.healthanalyzer.app.ai.withPlanReview
 import com.healthanalyzer.app.ai.KeyCipher
 import com.healthanalyzer.app.ai.LlmClients
 import com.healthanalyzer.app.ai.LlmConfig
@@ -129,7 +130,17 @@ class AiViewModel(app: Application) : AndroidViewModel(app) {
                 markBaselinePromptSeeded()
             }
             seedNewPromptsOnce()
+            addPlanReviewToReviewPromptsOnce()
         }
+    }
+
+    /** Training-review prompts saved before {{plan_review}} existed get it once; later edits are left alone. */
+    private suspend fun addPlanReviewToReviewPromptsOnce() {
+        if (prefs().getBoolean("planReviewAdded", false)) return
+        val changed = dao.allPrompts().filter { it.name.startsWith("Training review") }
+            .mapNotNull { p -> withPlanReview(p.userTemplate)?.let { p.copy(userTemplate = it) } }
+        if (changed.isNotEmpty()) dao.upsertPrompts(changed)
+        prefs().edit().putBoolean("planReviewAdded", true).apply()
     }
 
     private fun prefs() = getApplication<Application>().getSharedPreferences("ai_settings", android.content.Context.MODE_PRIVATE)
@@ -390,16 +401,17 @@ class AiViewModel(app: Application) : AndroidViewModel(app) {
     private var planJob: Job? = null
 
     /**
-     * Asks the model for a plan starting today and puts it on the calendar. Planned workouts from
-     * today on are replaced only once the new plan has parsed; earlier days are kept as history.
+     * Asks the model for a plan of whole Monday–Sunday weeks (see [TrainingPlan.period]) and puts
+     * it on the calendar. Workouts already planned in that period are replaced only once the new
+     * plan has parsed; earlier days are kept.
      */
-    fun generatePlan(providerId: Long?, goal: String, weeks: Int, runsPerWeek: Int) {
+    fun generatePlan(providerId: Long?, goal: String, weeks: Int, runsPerWeek: Int, fromToday: Boolean = false) {
         val provider = providers.value.firstOrNull { it.id == providerId } ?: providers.value.firstOrNull()
         if (provider == null) {
             _plan.value = PlanState(error = "Add an AI provider in Settings first.")
             return
         }
-        val request = com.healthanalyzer.app.ai.PlanRequest(goal.trim(), weeks, runsPerWeek)
+        val request = com.healthanalyzer.app.ai.PlanRequest(goal.trim(), weeks, runsPerWeek, fromToday)
         // Remember the request right away so the dialog reopens with it even if this attempt fails.
         savePlanInfo(_planInfo.value.copy(goal = request.goal, weeks = weeks, runsPerWeek = runsPerWeek))
         planJob?.cancel()
@@ -407,11 +419,12 @@ class AiViewModel(app: Application) : AndroidViewModel(app) {
             AiKeepAlive.acquire(getApplication())
             _plan.value = PlanState(generating = true)
             try {
-                val start = java.time.LocalDate.now()
-                val end = start.plusWeeks(weeks.toLong()).minusDays(1)
+                val today = java.time.LocalDate.now()
+                val (start, end) = com.healthanalyzer.app.ai.TrainingPlan.period(today, weeks, fromToday)
+                val kept = if (today.isBefore(start)) dao.planBetween(today.toString(), start.minusDays(1).toString()) else emptyList()
                 val system = listOf(renderer.render(com.healthanalyzer.app.ai.TrainingPlan.SYSTEM, null), provider.extraSystem)
                     .filter { it.isNotBlank() }.joinToString("\n\n")
-                val user = renderer.render(com.healthanalyzer.app.ai.TrainingPlan.userTemplate(request, start, end), null)
+                val user = renderer.render(com.healthanalyzer.app.ai.TrainingPlan.userTemplate(request, today, start, end, kept), null)
                 val output = StringBuilder()
                 LlmClients.forProtocol(provider.protocol).stream(provider.toConfig(), system, user).collect { delta ->
                     output.append(delta)
@@ -440,6 +453,97 @@ class AiViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun stopPlan() { planJob?.cancel() }
+
+    // ---- Revising the plan in conversation --------------------------------------------------
+
+    data class RevisionMessage(val fromAthlete: Boolean, val text: String)
+
+    data class RevisionState(
+        val messages: List<RevisionMessage> = emptyList(),
+        val running: Boolean = false,
+        val error: String? = null,
+        val canUndo: Boolean = false,
+    )
+
+    private val _revision = MutableStateFlow(RevisionState())
+    val revision: StateFlow<RevisionState> = _revision.asStateFlow()
+
+    /** The upcoming workouts as they were before the last applied change, and the day it was made. */
+    private var beforeRevision: Pair<String, List<com.healthanalyzer.app.ai.PlanWorkoutEntity>>? = null
+
+    /**
+     * Sends the upcoming plan and the athlete's [request] to the model and replaces the plan from
+     * today on with its answer. The plan's end date stays where it is.
+     */
+    fun revisePlan(providerId: Long?, request: String) {
+        val text = request.trim()
+        if (text.isEmpty() || _revision.value.running) return
+        val provider = providers.value.firstOrNull { it.id == providerId } ?: providers.value.firstOrNull()
+        if (provider == null) {
+            _revision.update { it.copy(error = "Add an AI provider in Settings first.") }
+            return
+        }
+        val earlier = _revision.value.messages.filter { it.fromAthlete }.map { it.text }
+        _revision.update { it.copy(messages = it.messages + RevisionMessage(true, text), running = true, error = null) }
+        planJob?.cancel()
+        planJob = viewModelScope.launch {
+            AiKeepAlive.acquire(getApplication())
+            try {
+                val today = java.time.LocalDate.now()
+                val upcoming = dao.planBetween(today.toString(), "9999-12-31")
+                if (upcoming.isEmpty()) throw IllegalStateException("There are no planned workouts from today on. Create a plan first.")
+                val sunday = today.with(java.time.temporal.TemporalAdjusters.nextOrSame(java.time.DayOfWeek.SUNDAY))
+                val end = maxOf(sunday, java.time.LocalDate.parse(upcoming.last().date))
+                val system = listOf(renderer.render(com.healthanalyzer.app.ai.TrainingPlan.REVISE_SYSTEM, null), provider.extraSystem)
+                    .filter { it.isNotBlank() }.joinToString("\n\n")
+                val user = renderer.render(
+                    com.healthanalyzer.app.ai.TrainingPlan.reviseTemplate(text, today, today, end, upcoming, _planInfo.value.goal, earlier),
+                    null,
+                )
+                val output = StringBuilder()
+                LlmClients.forProtocol(provider.protocol).stream(provider.toConfig(), system, user).collect { output.append(it) }
+                val parsed = com.healthanalyzer.app.ai.TrainingPlan.parse(output.toString(), today, end, System.currentTimeMillis())
+                container.aiDatabase.withTransaction {
+                    dao.deletePlanFrom(today.toString())
+                    dao.upsertPlanWorkouts(parsed.workouts)
+                }
+                beforeRevision = today.toString() to upcoming
+                _revision.update {
+                    it.copy(
+                        messages = it.messages + RevisionMessage(false, parsed.summary.ifBlank { "Plan updated." }),
+                        running = false,
+                        canUndo = true,
+                    )
+                }
+            } catch (e: CancellationException) {
+                _revision.update { it.copy(messages = it.messages.dropLast(1), running = false) }
+                throw e
+            } catch (e: Exception) {
+                // The failed request leaves the conversation so it isn't sent again as "already applied".
+                _revision.update { it.copy(messages = it.messages.dropLast(1), running = false, error = e.message ?: e.javaClass.simpleName) }
+            } finally {
+                AiKeepAlive.release(getApplication())
+            }
+        }
+    }
+
+    /** Puts back the upcoming workouts from before the last applied change. */
+    fun undoRevision() = viewModelScope.launch {
+        val (from, workouts) = beforeRevision ?: return@launch
+        container.aiDatabase.withTransaction {
+            dao.deletePlanFrom(from)
+            dao.upsertPlanWorkouts(workouts)
+        }
+        beforeRevision = null
+        _revision.update { it.copy(messages = it.messages + RevisionMessage(false, "Undone – the plan is back to how it was before the last change."), canUndo = false) }
+    }
+
+    /** Ends the conversation; the plan stays as it is now. */
+    fun closeRevision() {
+        if (_revision.value.running) planJob?.cancel()
+        beforeRevision = null
+        _revision.value = RevisionState()
+    }
 
     fun dismissPlanError() = _plan.update { it.copy(error = null) }
 

@@ -24,6 +24,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -97,6 +98,8 @@ fun PlanScreen(vm: AiViewModel, onOpenSettings: () -> Unit) {
     var selectedText by rememberSaveable { mutableStateOf(today.toString()) }
     var showGenerate by rememberSaveable { mutableStateOf(false) }
     var confirmClear by remember { mutableStateOf(false) }
+    var showRevise by rememberSaveable { mutableStateOf(false) }
+    val revision by vm.revision.collectAsStateWithLifecycle()
     var summaryOpen by rememberSaveable { mutableStateOf(false) }
     val month = YearMonth.parse(monthText)
     val selected = LocalDate.parse(selectedText)
@@ -314,6 +317,9 @@ fun PlanScreen(vm: AiViewModel, onOpenSettings: () -> Unit) {
             }
         }
         if (hasUpcoming && !state.generating) {
+            Button(onClick = { showRevise = true }, shape = RoundedCornerShape(10.dp), modifier = Modifier.fillMaxWidth()) {
+                Text("Change the plan with AI")
+            }
             OutlinedButton(onClick = { confirmClear = true }, shape = RoundedCornerShape(10.dp), modifier = Modifier.fillMaxWidth()) {
                 Text("Clear upcoming plan")
             }
@@ -329,10 +335,21 @@ fun PlanScreen(vm: AiViewModel, onOpenSettings: () -> Unit) {
             replacesPlan = hasUpcoming,
             onDismiss = { showGenerate = false },
             onOpenSettings = { showGenerate = false; onOpenSettings() },
-            onGenerate = { providerId, goal, weeks, perWeek ->
+            onGenerate = { providerId, goal, weeks, perWeek, fromToday ->
                 showGenerate = false
-                vm.generatePlan(providerId, goal, weeks, perWeek)
+                vm.generatePlan(providerId, goal, weeks, perWeek, fromToday)
             },
+        )
+    }
+    if (showRevise) {
+        RevisePlanDialog(
+            state = revision,
+            providers = providers,
+            defaultProviderId = vm.analyze.collectAsStateWithLifecycle().value.providerId,
+            onSend = vm::revisePlan,
+            onUndo = { vm.undoRevision() },
+            onStop = vm::stopPlan,
+            onDismiss = { showRevise = false; vm.closeRevision() },
         )
     }
     if (confirmClear) {
@@ -562,8 +579,10 @@ private fun GeneratePlanDialog(
     replacesPlan: Boolean,
     onDismiss: () -> Unit,
     onOpenSettings: () -> Unit,
-    onGenerate: (providerId: Long?, goal: String, weeks: Int, runsPerWeek: Int) -> Unit,
+    onGenerate: (providerId: Long?, goal: String, weeks: Int, runsPerWeek: Int, fromToday: Boolean) -> Unit,
 ) {
+    val today = remember { LocalDate.now() }
+    var fromToday by rememberSaveable { mutableStateOf(false) }
     var goal by rememberSaveable { mutableStateOf(info.goal) }
     var weeks by rememberSaveable { mutableStateOf(com.healthanalyzer.app.ai.DEFAULT_WEEKS) }
     var perWeek by rememberSaveable { mutableStateOf(info.runsPerWeek.takeIf { it in TrainingPlan.RUNS_PER_WEEK_OPTIONS } ?: 4) }
@@ -598,9 +617,25 @@ private fun GeneratePlanDialog(
                         display = { "${it.name} (${it.model.ifBlank { it.protocol.label }})" },
                         onSelect = { providerId = it.id },
                     )
+                    val (start, end) = TrainingPlan.period(today, weeks, fromToday)
+                    val firstMonday = TrainingPlan.period(today, weeks).first
+                    if (today.isBefore(firstMonday)) {
+                        Row(
+                            Modifier.fillMaxWidth().clickable { fromToday = !fromToday },
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Checkbox(checked = fromToday, onCheckedChange = { fromToday = it })
+                            Text("Also plan the rest of this week", style = MaterialTheme.typography.bodyMedium)
+                        }
+                    }
+                    Text(
+                        "Plans ${start.format(PLAN_DAY)} to ${end.format(PLAN_DAY)}. Weeks run Monday to Sunday.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Medium,
+                    )
                     Text(
                         "Sent to the model: your profile, baseline, 12-month running stats, 12 weeks of weekly totals and the last 28 days of runs." +
-                            if (replacesPlan) "\n\nThis replaces the workouts planned from today on." else "",
+                            if (replacesPlan) "\n\nThis replaces the workouts planned from ${start.format(PLAN_DAY)} on; earlier days stay." else "",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -609,8 +644,90 @@ private fun GeneratePlanDialog(
         },
         confirmButton = {
             if (providers.isEmpty()) TextButton(onClick = onOpenSettings) { Text("Open Settings") }
-            else TextButton(onClick = { onGenerate(provider?.id, goal, weeks, perWeek) }) { Text("Create plan") }
+            else TextButton(onClick = { onGenerate(provider?.id, goal, weeks, perWeek, fromToday) }) { Text("Create plan") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+private val PLAN_DAY: DateTimeFormatter = DateTimeFormatter.ofPattern("EEE d MMM", Locale.ENGLISH)
+
+/** A conversation with the model that changes the upcoming plan one request at a time. */
+@Composable
+private fun RevisePlanDialog(
+    state: AiViewModel.RevisionState,
+    providers: List<AiProviderEntity>,
+    defaultProviderId: Long?,
+    onSend: (providerId: Long?, request: String) -> Unit,
+    onUndo: () -> Unit,
+    onStop: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var draft by rememberSaveable { mutableStateOf("") }
+    var providerId by rememberSaveable { mutableStateOf(defaultProviderId) }
+    val provider = providers.firstOrNull { it.id == providerId } ?: providers.firstOrNull()
+    val scroll = rememberScrollState()
+    androidx.compose.runtime.LaunchedEffect(state.messages.size, state.running) { scroll.animateScrollTo(scroll.maxValue) }
+
+    AlertDialog(
+        onDismissRequest = { if (!state.running) onDismiss() },
+        title = { Text("Change the plan") },
+        text = {
+            Column(Modifier.verticalScroll(scroll), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                if (state.messages.isEmpty()) {
+                    Text(
+                        "Tell your coach what to change in the workouts from today on. For example: " +
+                            "\"I have a dinner on Friday, move that run\" or \"make next week's long run shorter\".",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+                state.messages.forEach { m ->
+                    if (m.fromAthlete) {
+                        Text(
+                            m.text,
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp))
+                                .background(MaterialTheme.colorScheme.primaryContainer).padding(10.dp),
+                        )
+                    } else {
+                        MarkdownText(m.text)
+                    }
+                }
+                if (state.running) {
+                    Text("Your coach is updating the plan…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    LinearProgressIndicator(Modifier.fillMaxWidth())
+                }
+                state.error?.let {
+                    Text("Nothing was changed: $it", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                }
+                if (state.canUndo && !state.running) {
+                    TextButton(onClick = onUndo) { Text("Undo last change") }
+                }
+                if (!state.running) {
+                    OutlinedTextField(
+                        value = draft,
+                        onValueChange = { draft = it },
+                        label = { Text(if (state.messages.isEmpty()) "What should change?" else "Anything else?") },
+                        minLines = 2,
+                        maxLines = 5,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    if (providers.size > 1) {
+                        Picker(
+                            label = "AI model",
+                            selected = provider,
+                            options = providers,
+                            display = { "${it.name} (${it.model.ifBlank { it.protocol.label }})" },
+                            onSelect = { providerId = it.id },
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            if (state.running) TextButton(onClick = onStop) { Text("Stop") }
+            else TextButton(onClick = { onSend(provider?.id, draft); draft = "" }, enabled = draft.isNotBlank()) { Text("Send") }
+        },
+        dismissButton = { if (!state.running) TextButton(onClick = onDismiss) { Text("Done") } },
     )
 }

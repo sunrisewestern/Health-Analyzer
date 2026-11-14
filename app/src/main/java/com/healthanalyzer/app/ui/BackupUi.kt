@@ -36,13 +36,14 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.healthanalyzer.app.backup.AutoBackupDestination
 import com.healthanalyzer.app.backup.BackupKind
 import com.healthanalyzer.app.backup.WebDavSettings
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
-private val PASSWORD_KEYS = androidx.compose.foundation.text.KeyboardOptions(
+internal val PASSWORD_KEYS = androidx.compose.foundation.text.KeyboardOptions(
     keyboardType = androidx.compose.ui.text.input.KeyboardType.Password,
     autoCorrectEnabled = false,
 )
@@ -75,6 +76,11 @@ fun BackupSection(vm: BackupViewModel, onRestored: (BackupKind) -> Unit) {
             onSelect = { toWebDav = it == 1 },
         )
         if (toWebDav) WebDavForm(state.webdav, busy = state.busy, onSave = vm::saveWebDav)
+        AutoBackupDestinationRow(
+            dest = if (toWebDav) AutoBackupDestination.WEBDAV else AutoBackupDestination.LOCAL,
+            webDavReady = state.webdav.isSet,
+        )
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
         val ready = !state.busy && (!toWebDav || state.webdav.isSet)
 
         BackupRow(
@@ -169,7 +175,7 @@ private fun BackupRow(title: String, subtitle: String, enabled: Boolean, onBacku
 }
 
 @Composable
-private fun WebDavForm(saved: WebDavSettings, busy: Boolean, onSave: (WebDavSettings) -> Unit) {
+internal fun WebDavForm(saved: WebDavSettings, busy: Boolean, onSave: (WebDavSettings) -> Unit) {
     var url by rememberSaveable { mutableStateOf(saved.url) }
     var user by rememberSaveable { mutableStateOf(saved.user) }
     var password by rememberSaveable { mutableStateOf(saved.password) }

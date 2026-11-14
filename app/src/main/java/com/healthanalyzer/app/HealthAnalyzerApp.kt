@@ -13,5 +13,11 @@ class HealthAnalyzerApp : Application() {
     val repository by lazy { RunRepository(database.runDao(), samsungHealth, prefs = getSharedPreferences("sync_state", MODE_PRIVATE)) }
     val aiDatabase by lazy { AiDatabase.create(this) }
     val garmin by lazy { com.healthanalyzer.app.data.GarminConnection(this) }
+    override fun onCreate() {
+        super.onCreate()
+        // Normally a no-op: WorkManager keeps the schedule itself. This restores it if it was ever lost.
+        runCatching { com.healthanalyzer.app.backup.AutoBackupScheduler.sync(this, replace = false) }
+    }
+
     val promptRenderer by lazy { PromptRenderer(this, database.runDao()) { from, to -> aiDatabase.aiDao().planBetween(from, to) } }
 }

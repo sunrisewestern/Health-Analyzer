@@ -1517,6 +1517,19 @@ private fun BackupSubScreen(
                 }
             }
         }
+
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
+            ) {
+                Column(Modifier.padding(14.dp)) {
+                    AutoBackupSection()
+                }
+            }
+        }
     }
 }
 

@@ -60,6 +60,12 @@ class WebDavClient(
         }
     }
 
+    fun delete(name: String) {
+        http.newCall(req(base + name).delete().build()).execute().use { r ->
+            if (!r.isSuccessful && r.code != 404) throw WebDavException("Delete failed: HTTP ${r.code} ${r.message}")
+        }
+    }
+
     /** Files directly inside the folder, newest first. */
     fun list(): List<RemoteFile> = propfind(base, depth = 1).use { r ->
         if (r.code == 401 || r.code == 403) throw WebDavException("The server rejected the username or password (HTTP ${r.code}).")

@@ -86,6 +86,8 @@ dependencies {
     implementation("androidx.room:room-ktx:2.7.2")
     ksp("androidx.room:room-compiler:2.7.2")
 
+    implementation("androidx.work:work-runtime-ktx:2.9.1") // scheduled automatic backups
+
     testImplementation("junit:junit:4.13.2")
 
     // AI providers: official Anthropic SDK + OkHttp for OpenAI-compatible endpoints

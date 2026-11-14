@@ -5,6 +5,7 @@ import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.healthanalyzer.app.ai.LlmClients
+import com.healthanalyzer.app.backup.AutoBackupScheduler
 import com.healthanalyzer.app.backup.BackupKind
 import com.healthanalyzer.app.backup.BackupManager
 import com.healthanalyzer.app.backup.RemoteFile
@@ -67,6 +68,7 @@ class BackupViewModel(app: Application) : AndroidViewModel(app) {
         dav(s).ensureFolder()
         WebDavSettings.save(getApplication(), s)
         _state.update { it.copy(webdav = s) }
+        AutoBackupScheduler.sync(getApplication(), replace = true)
         "WebDAV connected and saved"
     }
 
@@ -155,6 +157,8 @@ class BackupViewModel(app: Application) : AndroidViewModel(app) {
         run("Restoring…") {
             try {
                 manager.restore(opened, ::progress)
+                // A restored settings backup may bring a different WebDAV login (or none).
+                AutoBackupScheduler.sync(getApplication(), replace = true)
                 _state.update { it.copy(restored = opened.manifest.kind, webdav = WebDavSettings.load(getApplication())) }
                 "Restored ${opened.manifest.kind.label.lowercase()} from ${opened.manifest.createdAt.replace('T', ' ')} (${opened.manifest.summary()})"
             } finally {

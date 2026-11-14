@@ -14,8 +14,8 @@ android {
         applicationId = "com.healthanalyzer.app"
         minSdk = 29 // Samsung Health Data SDK requires Android 10+
         targetSdk = 36
-        versionCode = 6
-        versionName = "1.4.0"
+        versionCode = 7
+        versionName = "1.5.0"
     }
 
     // Release signing: the keystore and passwords live in ~/.gradle/gradle.properties

@@ -248,9 +248,9 @@ internal class ChatGptCodexClient(private val http: OkHttpClient) : LlmClient {
             })
             addProperty("stream", true)
             addProperty("store", false)
-            if (config.thinkingLevel != ThinkingLevel.DEFAULT && config.thinkingLevel != ThinkingLevel.OFF) {
-                config.thinkingLevel.apiValue?.let { addProperty("reasoning_effort", it) }
-            }
+            // The Responses API nests effort under "reasoning" (unlike Chat Completions).
+            Thinking.openAiEffort(config.protocol, config.model, config.thinkingLevel)
+                ?.let { add("reasoning", JsonObject().apply { addProperty("effort", it) }) }
         }.toString()
 
         var t = tokens(config)

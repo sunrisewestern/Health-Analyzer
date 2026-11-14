@@ -1679,13 +1679,13 @@ private fun ProviderEditor(vm: AiViewModel, initial: ProviderForm, onDone: () ->
         item {
             Picker(
                 label = "Thinking Level",
-                selected = form.thinkingLevel,
-                options = com.healthanalyzer.app.ai.ThinkingLevel.entries,
+                selected = com.healthanalyzer.app.ai.Thinking.resolve(form.protocol, form.model, form.thinkingLevel),
+                options = com.healthanalyzer.app.ai.Thinking.levelsFor(form.protocol, form.model),
                 display = { "${it.label} — ${it.description}" },
                 onSelect = { form = form.copy(thinkingLevel = it) },
             )
             Text(
-                "Sets reasoning effort or thinking budget for reasoning models (OpenAI o-series, Gemini 2.5/3, Claude 3.7, DeepSeek). Default lets the model decide.",
+                "Sets reasoning effort or thinking budget. The levels offered depend on the protocol and model ID; a level the model doesn't accept falls back to the nearest one. Default lets the model decide.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(start = 4.dp, top = 2.dp),

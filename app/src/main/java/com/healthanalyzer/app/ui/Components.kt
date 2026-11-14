@@ -121,7 +121,11 @@ fun <T> Picker(
             DropdownMenu(
                 expanded = open,
                 onDismissRequest = { open = false },
-                modifier = Modifier.background(MaterialTheme.colorScheme.surfaceContainerHigh),
+                // Cap the height so a long list scrolls inside the menu instead of running
+                // under the system bars, where the last entries can't be reached.
+                modifier = Modifier
+                    .heightIn(max = 420.dp)
+                    .background(MaterialTheme.colorScheme.surfaceContainerHigh),
             ) {
                 options.forEach { option ->
                     val isSelected = option == selected

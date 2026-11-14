@@ -846,7 +846,8 @@ class AiViewModel(app: Application) : AndroidViewModel(app) {
                 model = form.model.trim(),
                 maxTokens = form.maxTokens.toIntOrNull()?.coerceIn(256, 128_000) ?: 16000,
                 extraSystem = form.extraSystem,
-                thinkingLevel = form.thinkingLevel,
+                // Store what will actually be sent, so labels elsewhere match the request.
+                thinkingLevel = com.healthanalyzer.app.ai.Thinking.resolve(form.protocol, form.model.trim(), form.thinkingLevel),
             ),
         )
         if (_analyze.value.providerId == null) select(providerId = if (form.id == 0L) id else form.id)

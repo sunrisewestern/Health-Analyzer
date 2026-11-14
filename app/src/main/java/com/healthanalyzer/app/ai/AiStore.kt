@@ -25,18 +25,6 @@ enum class Protocol(val label: String) {
     CHATGPT("ChatGPT sign-in (Codex)"),
 }
 
-/**
- * Reasoning/thinking effort sent to models with extended thinking capabilities
- * (OpenAI o-series, Gemini 2.5/3, Claude 3.7, DeepSeek reasoner, etc.).
- */
-enum class ThinkingLevel(val label: String, val apiValue: String?, val description: String) {
-    DEFAULT("Default", null, "Model decides / unchanged"),
-    OFF("Off", "off", "Disable thinking where supported"),
-    LOW("Low", "low", "Fast, minimal reasoning tokens"),
-    MEDIUM("Medium", "medium", "Balanced reasoning effort"),
-    HIGH("High", "high", "Deep thinking, max reasoning tokens");
-}
-
 /** Ready-made endpoint settings; everything stays editable after picking one. */
 data class ProviderPreset(
     val name: String,

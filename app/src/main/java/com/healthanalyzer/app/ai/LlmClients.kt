@@ -183,9 +183,8 @@ private class OpenAiCompatibleClient(private val http: OkHttpClient) : LlmClient
             addProperty("model", config.model)
             add("messages", messages)
             addProperty("stream", true)
-            if (config.thinkingLevel != ThinkingLevel.DEFAULT && config.thinkingLevel != ThinkingLevel.OFF) {
-                config.thinkingLevel.apiValue?.let { addProperty("reasoning_effort", it) }
-            }
+            Thinking.openAiEffort(config.protocol, config.model, config.thinkingLevel)
+                ?.let { addProperty("reasoning_effort", it) }
         }
         val request = Request.Builder()
             .url(config.baseUrl.trimSlash() + "/chat/completions")
@@ -269,30 +268,7 @@ private class GeminiClient(private val http: OkHttpClient) : LlmClient {
             })
             val genConfig = JsonObject().apply {
                 addProperty("maxOutputTokens", config.maxTokens)
-                when (config.thinkingLevel) {
-                    ThinkingLevel.DEFAULT -> {}
-                    ThinkingLevel.OFF -> {
-                        add("thinkingConfig", JsonObject().apply {
-                            addProperty("thinkingBudget", 0)
-                        })
-                    }
-                    ThinkingLevel.LOW, ThinkingLevel.MEDIUM, ThinkingLevel.HIGH -> {
-                        val isGemini3 = config.model.contains("gemini-3") || config.model.contains("gemini-3.")
-                        add("thinkingConfig", JsonObject().apply {
-                            if (isGemini3) {
-                                addProperty("thinkingLevel", config.thinkingLevel.name)
-                            } else {
-                                val budget = when (config.thinkingLevel) {
-                                    ThinkingLevel.LOW -> 1024
-                                    ThinkingLevel.MEDIUM -> 8192
-                                    ThinkingLevel.HIGH -> 16384
-                                    else -> 8192
-                                }
-                                addProperty("thinkingBudget", budget)
-                            }
-                        })
-                    }
-                }
+                Thinking.geminiConfig(config.model, config.thinkingLevel)?.let { add("thinkingConfig", it) }
             }
             add("generationConfig", genConfig)
         }
@@ -368,24 +344,9 @@ private object AnthropicClient : LlmClient {
                     putAdditionalHeader("anthropic-beta", "server-side-fallback-2026-07-01")
                     putAdditionalBodyProperty("fallbacks", JsonValue.from("default"))
                 }
-                when (config.thinkingLevel) {
-                    ThinkingLevel.DEFAULT, ThinkingLevel.OFF -> {}
-                    ThinkingLevel.LOW, ThinkingLevel.MEDIUM, ThinkingLevel.HIGH -> {
-                        val minRequired = 1024
-                        if (config.maxTokens > minRequired) {
-                            val budget = when (config.thinkingLevel) {
-                                ThinkingLevel.LOW -> 2048
-                                ThinkingLevel.MEDIUM -> 8192
-                                ThinkingLevel.HIGH -> 16384
-                                else -> 8192
-                            }.coerceIn(minRequired, config.maxTokens - 1)
-                            putAdditionalBodyProperty(
-                                "thinking",
-                                JsonValue.from(mapOf("type" to "enabled", "budget_tokens" to budget)),
-                            )
-                        }
-                    }
-                }
+                val t = Thinking.anthropic(config.model, config.thinkingLevel, config.maxTokens)
+                t.thinking?.let { putAdditionalBodyProperty("thinking", JsonValue.from(it)) }
+                t.effort?.let { putAdditionalBodyProperty("output_config", JsonValue.from(mapOf("effort" to it))) }
             }
             .build()
         try {

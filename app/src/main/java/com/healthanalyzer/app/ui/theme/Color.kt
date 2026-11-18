@@ -21,6 +21,7 @@ val AiPurpleContainer = Color(0xFF3B187B)
 // Data Source Branding Accents
 val GarminBlue = Color(0xFF0089D6)
 val GarminBlueContainer = Color(0xFF002F4D)
+val HealthConnectBlue = Color(0xFF4285F4)
 val SamsungGreen = Color(0xFF2DB84C)
 val SamsungGreenContainer = Color(0xFF0A3D14)
 

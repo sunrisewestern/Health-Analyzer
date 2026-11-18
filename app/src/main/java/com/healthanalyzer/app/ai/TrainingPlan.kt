@@ -116,7 +116,8 @@ const val DEFAULT_WEEKS = 1
 
 /** Settings for the "Today" card on the Plan tab, kept in the "ai_settings" preferences. */
 data class RecapSettings(
-    val enabled: Boolean = true,
+    /** Write the briefing automatically when the Plan tab opens; off = only on request. */
+    val autoGenerate: Boolean = true,
     /** Resolved place for the weather; null = no weather. */
     val place: Place? = null,
 ) {
@@ -128,12 +129,14 @@ data class RecapSettings(
             val name = p.getString("recapPlace", null)
             val place = if (name.isNullOrBlank()) null else
                 Place(name, p.getFloat("recapLat", 0f).toDouble(), p.getFloat("recapLon", 0f).toDouble())
-            return RecapSettings(p.getBoolean("recapEnabled", true), place)
+            // "recapEnabled" was the old show/hide switch; it now seeds auto-generation.
+            val auto = p.getBoolean("recapAuto", p.getBoolean("recapEnabled", true))
+            return RecapSettings(auto, place)
         }
 
         fun save(context: Context, s: RecapSettings) {
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
-                .putBoolean("recapEnabled", s.enabled)
+                .putBoolean("recapAuto", s.autoGenerate)
                 .putString("recapPlace", s.place?.name)
                 .putFloat("recapLat", s.place?.lat?.toFloat() ?: 0f)
                 .putFloat("recapLon", s.place?.lon?.toFloat() ?: 0f)
@@ -181,7 +184,7 @@ data class Recap(
 object TodayRecap {
 
     val SYSTEM = """
-        You are the athlete's running coach writing a short briefing for today in the HealthAnalyzer
+        You are the athlete's running coach writing a short briefing for today in the Run Analyzer
         app. Use only the plan, training and weather data given – never invent weather; if no
         forecast is given, say nothing about the weather. Be practical: when to run, how to dress,
         hydration, and whether to adjust pace or effort for heat, cold, wind or rain (or move the

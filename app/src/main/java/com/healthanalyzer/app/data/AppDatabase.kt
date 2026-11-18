@@ -52,6 +52,12 @@ interface RunDao {
     @Query("SELECT sourceDetail FROM runs WHERE source = 'GARMIN_FIT' AND sourceDetail IS NOT NULL")
     suspend fun garminSourceDetails(): List<String>
 
+    @Query("DELETE FROM runs WHERE id IN (:ids)")
+    suspend fun deleteRuns(ids: List<String>)
+
+    @Query("DELETE FROM run_details WHERE runId IN (:ids)")
+    suspend fun deleteDetails(ids: List<String>)
+
     @Query("SELECT COUNT(*) FROM runs")
     suspend fun runCount(): Int
 
@@ -84,6 +90,16 @@ interface RunDao {
 
     @Query("SELECT * FROM other_workouts WHERE startEpochMs >= :sinceEpochMs ORDER BY startEpochMs")
     suspend fun otherWorkoutsSince(sinceEpochMs: Long): List<OtherWorkoutEntity>
+
+    @Query("SELECT * FROM other_workouts WHERE startEpochMs BETWEEN :fromMs AND :toMs")
+    suspend fun otherWorkoutsStartingBetween(fromMs: Long, toMs: Long): List<OtherWorkoutEntity>
+
+    /** Workouts read from Health Connect (their ids start with "hc:"). */
+    @Query("SELECT * FROM other_workouts WHERE id LIKE 'hc:%'")
+    suspend fun healthConnectWorkouts(): List<OtherWorkoutEntity>
+
+    @Query("DELETE FROM other_workouts WHERE id IN (:ids)")
+    suspend fun deleteOtherWorkouts(ids: List<String>)
 
     @Upsert
     suspend fun upsertOtherWorkouts(workouts: List<OtherWorkoutEntity>)

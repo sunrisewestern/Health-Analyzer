@@ -79,6 +79,7 @@ import com.healthanalyzer.app.ai.Protocol
 import com.healthanalyzer.app.backup.BackupKind
 import com.healthanalyzer.app.data.GarminPersonalApi
 import com.healthanalyzer.app.ui.theme.GarminBlue
+import com.healthanalyzer.app.ui.theme.HealthConnectBlue
 import com.healthanalyzer.app.ui.theme.SamsungGreen
 import com.healthanalyzer.app.ui.theme.ThemeConfig
 import com.healthanalyzer.app.ui.theme.ThemeMode
@@ -274,7 +275,7 @@ fun SettingsScreen(vm: AiViewModel, activity: Activity, runsVm: RunsViewModel) {
                 themeConfig = themeConfig,
                 runsVm = runsVm,
                 listState = hubListState,
-                recapEnabled = vm.recapSettings.collectAsStateWithLifecycle().value.enabled,
+                recapAuto = vm.recapSettings.collectAsStateWithLifecycle().value.autoGenerate,
                 onNavigate = { currentLayer = it },
             )
         }
@@ -293,7 +294,7 @@ private fun SettingsHubScreen(
     themeConfig: ThemeConfig,
     runsVm: RunsViewModel,
     listState: LazyListState,
-    recapEnabled: Boolean,
+    recapAuto: Boolean,
     onNavigate: (SettingsLayer) -> Unit,
 ) {
     val runsState by runsVm.state.collectAsStateWithLifecycle()
@@ -406,7 +407,7 @@ private fun SettingsHubScreen(
             CategoryTile(
                 title = "Training Plan",
                 subtitle = "Today's coach briefing on the Plan tab and the weather location it uses",
-                badgeText = if (recapEnabled) "Today's recap on" else "Today's recap off",
+                badgeText = if (recapAuto) "Recap: automatic" else "Recap: on request",
                 icon = { AppIcons.Calendar(modifier = Modifier.size(22.dp), tint = MaterialTheme.colorScheme.primary) },
                 iconBackground = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f),
                 onClick = { onNavigate(SettingsLayer.TRAINING_PLAN) },
@@ -428,7 +429,7 @@ private fun SettingsHubScreen(
         item {
             CategoryTile(
                 title = "Data Sources & Integrations",
-                subtitle = "Garmin Connect Personal API, Samsung Health sync, and FIT imports",
+                subtitle = "Garmin Connect Personal API, Samsung Health sync, Health Connect, and FIT imports",
                 badgeText = if (runsState.garminConnected) "Garmin Active" else "${runs.size} runs stored",
                 icon = { AppIcons.Database(modifier = Modifier.size(22.dp), tint = GarminBlue) },
                 iconBackground = GarminBlue.copy(alpha = 0.15f),
@@ -471,7 +472,7 @@ private fun SettingsHubScreen(
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 Text(
-                    "HealthAnalyzer v${com.healthanalyzer.app.BuildConfig.VERSION_NAME}",
+                    "Run Analyzer v${com.healthanalyzer.app.BuildConfig.VERSION_NAME}",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
                     fontWeight = FontWeight.Medium,
@@ -671,52 +672,51 @@ private fun TrainingPlanSubScreen(vm: AiViewModel, listState: LazyListState, onB
                 Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
-                            Text("Today's recap", fontWeight = FontWeight.SemiBold)
+                            Text("Write today's briefing automatically", fontWeight = FontWeight.SemiBold)
                             Text(
-                                "A card at the top of the Plan tab with today's workout, the weather and a short AI coach " +
-                                    "briefing (when to run, what to wear, pace adjustments). Written once a day with your " +
-                                    "first AI provider, and again when today's plan changes.",
+                                "The Today card at the top of the Plan tab always shows today's workout. " +
+                                    "On: a short AI coach briefing with the weather (when to run, what to wear, pace " +
+                                    "adjustments) is written once a day, and again when today's plan changes. " +
+                                    "Off: tap Write briefing on the card when you want one.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
                         Spacer(Modifier.width(8.dp))
-                        Switch(checked = settings.enabled, onCheckedChange = vm::setRecapEnabled)
+                        Switch(checked = settings.autoGenerate, onCheckedChange = vm::setRecapAutoGenerate)
                     }
-                    if (settings.enabled) {
-                        OutlinedTextField(
-                            value = city,
-                            onValueChange = { city = it },
-                            label = { Text("City for the weather") },
-                            placeholder = { Text("e.g. Toronto") },
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(
-                                onClick = { vm.setRecapCity(city) },
-                                enabled = !searching,
-                                shape = RoundedCornerShape(10.dp),
-                            ) { Text(if (searching) "Looking up…" else "Save location") }
-                            if (settings.place != null) {
-                                TextButton(onClick = { city = ""; vm.setRecapCity("") }) {
-                                    Text("Remove", color = MaterialTheme.colorScheme.error)
-                                }
+                    OutlinedTextField(
+                        value = city,
+                        onValueChange = { city = it },
+                        label = { Text("City for the weather") },
+                        placeholder = { Text("e.g. Toronto") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(
+                            onClick = { vm.setRecapCity(city) },
+                            enabled = !searching,
+                            shape = RoundedCornerShape(10.dp),
+                        ) { Text(if (searching) "Looking up…" else "Save location") }
+                        if (settings.place != null) {
+                            TextButton(onClick = { city = ""; vm.setRecapCity("") }) {
+                                Text("Remove", color = MaterialTheme.colorScheme.error)
                             }
                         }
-                        Text(
-                            settings.place?.let { "Using ${it.name} (%.2f, %.2f).".format(it.lat, it.lon) }
-                                ?: "No location – the recap leaves the weather out.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        Text(
-                            "The forecast comes from Open-Meteo (free, no account); only the city's coordinates are sent there. " +
-                                "The AI model reads the forecast – it doesn't look up the weather itself.",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
                     }
+                    Text(
+                        settings.place?.let { "Using ${it.name} (%.2f, %.2f).".format(it.lat, it.lon) }
+                            ?: "No location – the recap leaves the weather out.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        "The forecast comes from Open-Meteo (free, no account); only the city's coordinates are sent there. " +
+                            "The AI model reads the forecast – it doesn't look up the weather itself.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
             }
         }
@@ -1465,6 +1465,20 @@ private fun DataIntegrationsSubScreen(
             }
         }
 
+        item { SectionHeader("Health Connect") }
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
+            ) {
+                Column(Modifier.padding(14.dp)) {
+                    HealthConnectSection(runsVm)
+                }
+            }
+        }
+
         item { SectionHeader("Samsung Health & Data Storage") }
         item {
             Card(
@@ -2185,6 +2199,81 @@ private fun CodexSignInCard(vm: AiViewModel, form: ProviderForm) {
             }
             if (credentials != null && form.id == 0L) {
                 Text("Tap Save below to keep this sign-in.", style = MaterialTheme.typography.bodySmall)
+            }
+        }
+    }
+}
+
+@Composable
+private fun HealthConnectSection(runsVm: RunsViewModel) {
+    val state by runsVm.state.collectAsStateWithLifecycle()
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val permissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.health.connect.client.PermissionController.createRequestPermissionResultContract(),
+        runsVm::onHealthConnectPermissions,
+    )
+    fun open(intent: android.content.Intent) {
+        runCatching { context.startActivity(intent) }
+    }
+    val requestAccess = { permissionLauncher.launch(runsVm.healthConnect.permissionsToRequest()) }
+
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(
+            "Reads workouts, sleep and resting heart rate that other apps and watches write to Health Connect. " +
+                "Read only. A workout that Samsung Health or Garmin also has is taken from there, since they carry more detail.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        when {
+            !state.healthConnectAvailable -> {
+                Text(
+                    if (state.healthConnectNeedsUpdate) "Health Connect needs to be installed or updated on this phone."
+                    else "Health Connect isn't available on this phone.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                if (state.healthConnectNeedsUpdate) {
+                    Button(onClick = { open(runsVm.healthConnect.installIntent()) }, shape = RoundedCornerShape(12.dp)) {
+                        Text("Install Health Connect")
+                    }
+                }
+            }
+            state.healthConnectConnected -> {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    StatusBadge(
+                        text = "Connected",
+                        containerColor = HealthConnectBlue.copy(alpha = 0.15f),
+                        contentColor = HealthConnectBlue,
+                        dotColor = HealthConnectBlue,
+                    )
+                    state.healthConnectAccess?.let {
+                        Text(
+                            "$it permissions granted",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = { runsVm.syncHealthConnect(full = true) },
+                        enabled = !state.busy,
+                        shape = RoundedCornerShape(10.dp),
+                    ) { Text("Sync All History") }
+                    TextButton(onClick = requestAccess) { Text("Permissions") }
+                    TextButton(onClick = { open(runsVm.healthConnect.manageIntent()) }) { Text("Manage") }
+                }
+            }
+            else -> {
+                Button(onClick = requestAccess, enabled = !state.busy, shape = RoundedCornerShape(12.dp)) {
+                    Text("Connect Health Connect")
+                }
+            }
+        }
+        state.progress?.takeIf { it.contains("Health Connect") }?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+        state.message?.takeIf { it.startsWith("Health Connect") }?.let { msg ->
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(msg, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+                TextButton(onClick = runsVm::dismissMessage) { Text("OK") }
             }
         }
     }

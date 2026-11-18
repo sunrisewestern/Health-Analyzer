@@ -1,8 +1,8 @@
-# HealthAnalyzer
+# Run Analyzer
 
 An Android app that collects your runs from **Samsung Health** and **Garmin**, shows them in a dashboard, and uses the **AI provider of your choice** to analyze runs, build an athlete baseline, and chat with you like a running coach.
 
-![HealthAnalyzer screens](docs/screenshots/overview.png)
+![Run Analyzer screens](docs/screenshots/overview.png)
 
 <sub>Screenshots use public sample data from [ThomasKuehne/FIT-test-files](https://github.com/ThomasKuehne/FIT-test-files) and a made-up athlete profile.</sub>
 
@@ -13,7 +13,8 @@ An Android app that collects your runs from **Samsung Health** and **Garmin**, s
 - **Samsung Health data export import**: adds Myotest running dynamics (ground contact and flight time, vertical oscillation, left/right asymmetry, stride regularity, leg stiffness) and sweat loss, which live sync can't read. Merges into runs you already synced.
 - **Garmin Connect** through your own Personal API key: incremental sync that only downloads new activities.
 - **FIT files**: single `.fit` files, Garmin "Export Original" zips, or a whole Garmin account export.
-- Runs recorded by both a Galaxy Watch and a Garmin are kept once.
+- **Health Connect** (read only): runs with heart rate, speed, cadence, power and route, other workouts such as strength sessions, sleep and resting heart rate from any app or watch that writes there.
+- Runs recorded by both a Galaxy Watch and a Garmin are kept once. A workout that Health Connect shares with Samsung Health or Garmin is taken from those, since they carry more detail.
 
 **Looking at them**
 - Runs list with filters (type, period, distance, source).
@@ -27,7 +28,7 @@ An Android app that collects your runs from **Samsung Health** and **Garmin**, s
 - **Coach chat**: multi-turn chat. For each chat you choose what the coach sees: athlete profile, baseline, recent training, and any saved analyses.
 
 **Your data**
-- Backup & restore of **settings (including API keys)** and **data (runs, analyses, chats)** to a file or a **WebDAV** folder (Nextcloud, Jianguoyun…). Backups are AES-256-GCM encrypted with a password (always, for settings).
+- Backup & restore of **settings (including API keys)** and **data (runs, analyses, chats)** to a file or a **WebDAV** server (Nextcloud, Jianguoyun…), into a `RunAnalyzer` folder created automatically. Backups are AES-256-GCM encrypted with a password (always, for settings).
 - Erase all loaded data from Settings.
 - Step-by-step setup guides in the app.
 
@@ -35,6 +36,7 @@ An Android app that collects your runs from **Samsung Health** and **Garmin**, s
 
 - Android 10 (API 29) or newer.
 - **Live Samsung sync** needs a phone with Samsung Health and its *developer mode* turned on, because this app isn't a registered Samsung partner: Samsung Health → ⋮ → Settings → About Samsung Health → tap the version ~10 times → Settings → Developer mode → turn on *Developer Mode for Data Read*. Without a Samsung phone you can still use the export import, FIT files, and Garmin.
+- **Health Connect** is connected in Settings → Data & Integrations. It has no running dynamics, VO2max or sleep score, and without the "past data" permission it only returns the 30 days before access was granted.
 - **Garmin sync** needs your own Personal API key from [Garmin Connect](https://connect.garmin.com/app/settings/personalApiToken).
 - **AI features** need your own provider account or a local model.
 
@@ -91,6 +93,7 @@ Repository secrets configured:
 ```
 app/src/main/java/com/healthanalyzer/app/
   samsung/   Samsung Health Data SDK source, export folder access
+  healthconnect/  Health Connect source (workouts, sleep, resting heart rate)
   data/      Room database, repository, FIT / Samsung export importers, Garmin Personal API
   ai/        LLM clients, prompt rendering, chat context, encrypted key storage
   backup/    Backup format, encryption, WebDAV client

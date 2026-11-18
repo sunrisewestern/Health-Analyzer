@@ -195,11 +195,11 @@ class BackupManager(private val context: Context) {
         } else file
         val manifest = try {
             ZipFile(zip).use { z ->
-                val e = z.getEntry(MANIFEST) ?: throw IOException("This isn't a HealthAnalyzer backup (no manifest)")
+                val e = z.getEntry(MANIFEST) ?: throw IOException("This isn't a Run Analyzer backup (no manifest)")
                 gson.fromJson(z.getInputStream(e).reader().readText(), BackupManifest::class.java)
             }
         } catch (e: java.util.zip.ZipException) {
-            throw IOException("This isn't a HealthAnalyzer backup file")
+            throw IOException("This isn't a Run Analyzer backup file")
         }
         return Opened(zip, manifest, temporary = zip != file)
     }

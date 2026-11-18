@@ -27,6 +27,13 @@ data class UiState(
     val garminConnected: Boolean = false,
     val garminLastSync: String? = null,
     val progress: String? = null,
+    /** Health Connect exists on this phone (it may still need an update). */
+    val healthConnectAvailable: Boolean = false,
+    val healthConnectNeedsUpdate: Boolean = false,
+    /** Exercise read access is granted, so Health Connect can be synced. */
+    val healthConnectConnected: Boolean = false,
+    /** How many of the permissions asked for are granted, e.g. "9 of 12". */
+    val healthConnectAccess: String? = null,
 )
 
 class RunsViewModel(app: Application) : AndroidViewModel(app) {
@@ -222,6 +229,55 @@ class RunsViewModel(app: Application) : AndroidViewModel(app) {
         } finally {
             refreshGarminState()
             _state.update { it.copy(busy = false, progress = null) }
+        }
+    }
+
+    // ---- Health Connect ---------------------------------------------------------------------
+
+    val healthConnect = container.healthConnect
+
+    /** Re-reads availability and grants; called on every return to the app, since both change outside it. */
+    fun refreshHealthConnectState() = viewModelScope.launch {
+        runCatching {
+            val available = healthConnect.isAvailable
+            val granted = if (available) healthConnect.grantedPermissions() else emptySet()
+            val wanted = if (available) healthConnect.permissionsToRequest() else emptySet()
+            _state.update {
+                it.copy(
+                    healthConnectAvailable = available,
+                    healthConnectNeedsUpdate = healthConnect.needsUpdate,
+                    healthConnectConnected = com.healthanalyzer.app.healthconnect.HealthConnectSource.READ_EXERCISE in granted,
+                    healthConnectAccess = "${wanted.count { p -> p in granted }} of ${wanted.size}",
+                )
+            }
+        }.onFailure { if (it is kotlinx.coroutines.CancellationException) throw it }
+    }
+
+    /** Result of Health Connect's permission screen. */
+    fun onHealthConnectPermissions(granted: Set<String>) {
+        val ok = com.healthanalyzer.app.healthconnect.HealthConnectSource.READ_EXERCISE in granted
+        _state.update {
+            it.copy(message = if (ok) "Health Connect connected. Tap Sync Health Connect on the Runs tab." else "Health Connect: exercise access is needed to sync")
+        }
+        refreshHealthConnectState()
+    }
+
+    fun syncHealthConnect(full: Boolean) = viewModelScope.launch {
+        _state.update { it.copy(busy = true) }
+        try {
+            val r = repository.syncHealthConnect(healthConnect, full) { p -> _state.update { it.copy(progress = p) } }
+            val parts = buildList {
+                add("Health Connect: ${r.runs} run(s) and ${r.workouts} other workout(s) stored")
+                if (r.duplicates > 0) add("${r.duplicates} already here from another source")
+                if (r.recoveryDays > 0) add("${r.recoveryDays} day(s) of sleep / resting HR")
+            }
+            _state.update { it.copy(message = parts.joinToString(" · ")) }
+        } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException) throw e
+            _state.update { it.copy(message = "Health Connect sync failed: ${e.message ?: e.javaClass.simpleName}") }
+        } finally {
+            _state.update { it.copy(busy = false, progress = null) }
+            refreshHealthConnectState()
         }
     }
 

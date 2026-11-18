@@ -608,7 +608,7 @@ class AiViewModel(app: Application) : AndroidViewModel(app) {
 
     private var recapJob: Job? = null
 
-    fun setRecapEnabled(enabled: Boolean) = saveRecapSettings(_recapSettings.value.copy(enabled = enabled))
+    fun setRecapAutoGenerate(auto: Boolean) = saveRecapSettings(_recapSettings.value.copy(autoGenerate = auto))
 
     /** Looks up [city] and uses it for the weather; blank removes the place. */
     fun setRecapCity(city: String) {
@@ -645,10 +645,11 @@ class AiViewModel(app: Application) : AndroidViewModel(app) {
     /**
      * Writes today's briefing unless the cached one still fits (same day, today's workouts and
      * place). A failed attempt is cached too, so opening the tab doesn't retry; [force] does.
+     * Without [force] it only runs when auto-generation is on.
      */
     fun refreshRecap(force: Boolean = false) {
         val settings = _recapSettings.value
-        if (!settings.enabled || recapJob?.isActive == true) return
+        if ((!force && !settings.autoGenerate) || recapJob?.isActive == true) return
         recapJob = viewModelScope.launch {
             val today = java.time.LocalDate.now()
             val todays = dao.planBetween(today.toString(), today.toString())

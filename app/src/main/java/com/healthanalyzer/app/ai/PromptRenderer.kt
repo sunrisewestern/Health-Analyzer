@@ -350,7 +350,12 @@ class PromptRenderer(
                 appendLine("Garmin training effect: aerobic ${r.aerobicTrainingEffect ?: "–"}, anaerobic ${r.anaerobicTrainingEffect ?: "–"}")
             }
             r.sweatLossMl?.let { appendLine("Estimated sweat loss: %.0f ml".format(it)) }
-            appendLine("Data source: ${if (r.sourceOrDefault == com.healthanalyzer.app.data.SOURCE_GARMIN_FIT) "Garmin (FIT file)" else "Samsung Health"}")
+            val sourceLabel = when (r.sourceOrDefault) {
+                com.healthanalyzer.app.data.SOURCE_GARMIN_FIT -> "Garmin (FIT file)"
+                com.healthanalyzer.app.data.SOURCE_HEALTH_CONNECT -> "Health Connect${r.sourceAppId?.let { " (recorded by $it)" } ?: ""}"
+                else -> "Samsung Health"
+            }
+            appendLine("Data source: $sourceLabel")
 
             val breakdown = RunAnalysis.breakdown(d.samples, d.route, r.distanceM)
             val splits = breakdown.splits

@@ -12,7 +12,7 @@ object ChatContext {
 
     private val BASE = """
         You are an experienced running coach and exercise physiologist chatting with the athlete in
-        the HealthAnalyzer app. Use the athlete data below whenever it is relevant and quote the
+        the Run Analyzer app. Use the athlete data below whenever it is relevant and quote the
         numbers you rely on. Say clearly when the data can't support a conclusion. Don't give medical
         diagnoses. Keep replies short and conversational unless asked for detail.
         Format with simple Markdown only (bold, bullet lists, small tables). Never use LaTeX or math

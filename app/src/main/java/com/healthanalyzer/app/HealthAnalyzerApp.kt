@@ -9,6 +9,7 @@ import com.healthanalyzer.app.samsung.SamsungHealthSource
 
 class HealthAnalyzerApp : Application() {
     val samsungHealth by lazy { SamsungHealthSource(this) }
+    val healthConnect by lazy { com.healthanalyzer.app.healthconnect.HealthConnectSource(this) }
     val database by lazy { AppDatabase.create(this) }
     val repository by lazy { RunRepository(database.runDao(), samsungHealth, prefs = getSharedPreferences("sync_state", MODE_PRIVATE)) }
     val aiDatabase by lazy { AiDatabase.create(this) }

@@ -60,10 +60,12 @@ import com.healthanalyzer.app.data.RunFilter
 import com.healthanalyzer.app.data.RunSummary
 import com.healthanalyzer.app.data.RunTypeFilter
 import com.healthanalyzer.app.data.SOURCE_GARMIN_FIT
+import com.healthanalyzer.app.data.SOURCE_HEALTH_CONNECT
 import com.healthanalyzer.app.data.SOURCE_SAMSUNG
 import com.healthanalyzer.app.data.SourceFilter
 import com.healthanalyzer.app.data.Split
 import com.healthanalyzer.app.ui.theme.GarminBlue
+import com.healthanalyzer.app.ui.theme.HealthConnectBlue
 import com.healthanalyzer.app.ui.theme.PulseCoral
 import com.healthanalyzer.app.ui.theme.RunnerTeal
 import com.healthanalyzer.app.ui.theme.SamsungGreen
@@ -140,6 +142,8 @@ fun RunsScreen(viewModel: RunsViewModel, activity: Activity, onAnalyzeRun: (Stri
                     garminConnected = state.garminConnected,
                     garminLastSync = state.garminLastSync,
                     onSyncGarmin = viewModel::syncGarmin,
+                    healthConnectConnected = state.healthConnectConnected,
+                    onSyncHealthConnect = { viewModel.syncHealthConnect(full = false) },
                     listState = runListState,
                 )
             }
@@ -163,6 +167,8 @@ private fun RunListView(
     garminConnected: Boolean,
     garminLastSync: String?,
     onSyncGarmin: (full: Boolean) -> Unit,
+    healthConnectConnected: Boolean,
+    onSyncHealthConnect: () -> Unit,
     listState: LazyListState = rememberLazyListState(),
 ) {
     val runs = remember(allRuns, filter) { filter.apply(allRuns) }
@@ -198,7 +204,7 @@ private fun RunListView(
                         }
                         Column {
                             Text(
-                                "HealthAnalyzer",
+                                "Run Analyzer",
                                 style = MaterialTheme.typography.titleLarge,
                                 fontWeight = FontWeight.Bold,
                             )
@@ -306,6 +312,17 @@ private fun RunListView(
                                 }
                             }
                         }
+
+                        if (healthConnectConnected) {
+                            OutlinedButton(
+                                onClick = onSyncHealthConnect,
+                                enabled = !busy,
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(10.dp),
+                            ) {
+                                Text("Sync Health Connect", style = MaterialTheme.typography.labelMedium)
+                            }
+                        }
                     }
                 }
             }
@@ -363,7 +380,7 @@ private fun RunListView(
                         ) {
                             Text("No runs matching this filter", style = MaterialTheme.typography.titleMedium)
                             Text(
-                                "Sync from Samsung Health, Garmin, or import .fit files.",
+                                "Sync from Samsung Health, Garmin or Health Connect, or import .fit files.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -460,10 +477,17 @@ private fun FilterRows(filter: RunFilter, onFilter: (RunFilter) -> Unit, showSou
     }
 }
 
+/** Label and brand colour of the source a run came from. */
+private fun sourceBadge(run: RunEntity, short: Boolean): Pair<String, Color> = when (run.sourceOrDefault) {
+    SOURCE_GARMIN_FIT -> (if (short) "Garmin" else "Garmin FIT") to GarminBlue
+    SOURCE_HEALTH_CONNECT -> (if (short) "Health Conn." else "Health Connect") to HealthConnectBlue
+    else -> (if (short) "Samsung" else "Samsung Health") to SamsungGreen
+}
+
 @Composable
 private fun RunCard(run: RunEntity, onClick: () -> Unit) {
     val distanceKm = (run.distanceM ?: 0f) / 1000
-    val isGarmin = run.sourceOrDefault == SOURCE_GARMIN_FIT
+    val (sourceLabel, sourceColor) = sourceBadge(run, short = true)
     val paceValue = pace(run)
 
     Card(
@@ -496,10 +520,10 @@ private fun RunCard(run: RunEntity, onClick: () -> Unit) {
                         contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     StatusBadge(
-                        text = if (isGarmin) "Garmin" else "Samsung",
-                        containerColor = if (isGarmin) GarminBlue.copy(alpha = 0.15f) else SamsungGreen.copy(alpha = 0.15f),
-                        contentColor = if (isGarmin) GarminBlue else SamsungGreen,
-                        dotColor = if (isGarmin) GarminBlue else SamsungGreen,
+                        text = sourceLabel,
+                        containerColor = sourceColor.copy(alpha = 0.15f),
+                        contentColor = sourceColor,
+                        dotColor = sourceColor,
                     )
                 }
             }
@@ -647,7 +671,7 @@ private fun Dashboard(s: RunSummary) {
 private fun RunDetailView(detail: RunDetail, onBack: () -> Unit, onAnalyze: () -> Unit) {
     val run = detail.run
     val splits = remember(detail) { RunAnalysis.splits(detail.samples, run.distanceM) }
-    val isGarmin = run.sourceOrDefault == SOURCE_GARMIN_FIT
+    val (sourceLabel, sourceColor) = sourceBadge(run, short = false)
 
     LazyColumn(
         contentPadding = PaddingValues(16.dp),
@@ -703,9 +727,9 @@ private fun RunDetailView(detail: RunDetail, onBack: () -> Unit, onAnalyze: () -
                         contentColor = MaterialTheme.colorScheme.primary,
                     )
                     StatusBadge(
-                        text = if (isGarmin) "Garmin FIT" else "Samsung Health",
-                        containerColor = if (isGarmin) GarminBlue.copy(alpha = 0.15f) else SamsungGreen.copy(alpha = 0.15f),
-                        contentColor = if (isGarmin) GarminBlue else SamsungGreen,
+                        text = sourceLabel,
+                        containerColor = sourceColor.copy(alpha = 0.15f),
+                        contentColor = sourceColor,
                     )
                 }
                 Text(

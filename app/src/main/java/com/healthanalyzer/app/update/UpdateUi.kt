@@ -77,7 +77,7 @@ fun UpdateDialog(vm: UpdateViewModel) {
                     }
                     is UpdateStatus.ReadyToInstall -> if (needsPermission) {
                         Text(
-                            "Allow HealthAnalyzer to install apps in the next screen, then come back and tap Install.",
+                            "Allow Run Analyzer to install apps in the next screen, then come back and tap Install.",
                             style = MaterialTheme.typography.bodySmall,
                         )
                     }

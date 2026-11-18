@@ -14,6 +14,9 @@ data class RunDetail(
     val route: List<RoutePoint>,
 )
 
+/** What a Health Connect sync did. [duplicates] are workouts another source already had. */
+data class HealthConnectSyncResult(val runs: Int, val workouts: Int, val duplicates: Int, val recoveryDays: Int)
+
 class RunRepository(
     private val dao: RunDao,
     private val source: SamsungHealthSource,
@@ -38,6 +41,7 @@ class RunRepository(
         val (runs, others) = source.readExercise(from, Instant.now().plusSeconds(60))
         val (keep, _) = withoutCrossSourceDuplicates(runs)
         store(keep)
+        replaceHealthConnectWorkouts(others)
         others.chunked(200).forEach { dao.upsertOtherWorkouts(it) }
         prefs?.edit()?.putBoolean(OTHER_BACKFILLED, true)?.apply()
         // Recovery data is an extra: a failure here must not fail the run sync.
@@ -63,6 +67,54 @@ class RunRepository(
         return read.size
     }
 
+    /**
+     * Pulls workouts, sleep and resting heart rate from Health Connect. A workout that another
+     * source already has (same start within 2 minutes) is skipped before its series are read:
+     * Samsung Health and Garmin carry more detail, and Samsung Health mirrors its own workouts
+     * into Health Connect. Incremental by default; [full] re-reads everything Health Connect returns.
+     */
+    suspend fun syncHealthConnect(
+        hc: com.healthanalyzer.app.healthconnect.HealthConnectSource,
+        full: Boolean,
+        onProgress: (String) -> Unit = {},
+    ): HealthConnectSyncResult {
+        val granted = hc.grantedPermissions()
+        val now = Instant.now()
+        val syncedUntil = if (full) null else prefs?.getLong(HC_SYNCED_UNTIL, 0L)?.takeIf { it > 0 }
+        val since = syncedUntil?.let { Instant.ofEpochMilli(it).minus(OVERLAP) } ?: HISTORY_START
+        val sessions = hc.readSessions(since, now.plusSeconds(60))
+        var runs = 0
+        var workouts = 0
+        var duplicates = 0
+        sessions.forEachIndexed { index, session ->
+            onProgress("Reading Health Connect workouts ${index + 1}/${sessions.size}…")
+            val start = session.startTime.toEpochMilli()
+            if (com.healthanalyzer.app.healthconnect.HealthConnectMapping.isRun(session.exerciseType)) {
+                val taken = dao.runsStartingBetween(start - DUP_WINDOW_MS, start + DUP_WINDOW_MS)
+                    .any { it.sourceOrDefault != SOURCE_HEALTH_CONNECT }
+                if (taken) duplicates++ else { store(listOf(hc.loadRun(session, granted))); runs++ }
+            } else {
+                val taken = dao.otherWorkoutsStartingBetween(start - DUP_WINDOW_MS, start + DUP_WINDOW_MS)
+                    .any { !it.id.startsWith(HEALTH_CONNECT_ID_PREFIX) }
+                if (taken) duplicates++ else { dao.upsertOtherWorkouts(listOf(hc.loadOtherWorkout(session, granted))); workouts++ }
+            }
+        }
+        prefs?.edit()?.putLong(HC_SYNCED_UNTIL, now.toEpochMilli())?.apply()
+
+        // Recovery is an extra: a failure here must not fail the workout sync.
+        val recoveryDays = runCatching {
+            onProgress("Reading Health Connect sleep and resting heart rate…")
+            val today = LocalDate.now()
+            val from = if (syncedUntil == null) today.minusDays(if (full) RECOVERY_FULL_DAYS else RECOVERY_FIRST_DAYS) else today.minusDays(RECOVERY_RECENT_DAYS)
+            val read = hc.readRecovery(from, today, granted)
+            val existing = dao.recoveryBetween(from.toString(), today.toString()).associateBy { it.date }
+            // What Samsung Health already stored for a day is kept; Health Connect only fills the gaps.
+            if (read.isNotEmpty()) dao.upsertRecovery(read.map { day -> existing[day.date]?.let { day.mergedWith(it) } ?: day })
+            read.size
+        }.onFailure { if (it is kotlinx.coroutines.CancellationException) throw it }.getOrDefault(0)
+        return HealthConnectSyncResult(runs, workouts, duplicates, recoveryDays)
+    }
+
     /** Stores runs read from FIT files. Returns (stored, skipped as duplicates of another source). */
     suspend fun importRuns(runs: List<SyncedRun>): Pair<Int, Int> {
         val (keep, dupes) = withoutCrossSourceDuplicates(runs)
@@ -74,19 +126,41 @@ class RunRepository(
      * Drops runs that another source already has: same start within 2 minutes and distance
      * within 5% (e.g. one run recorded by both a Galaxy Watch and a Garmin). The first source
      * stored wins. Re-importing the same source simply updates its own rows.
+     *
+     * A Health Connect copy never wins: it is the least detailed, so it is removed when the same
+     * run arrives from Samsung Health or Garmin.
      */
     private suspend fun withoutCrossSourceDuplicates(runs: List<SyncedRun>): Pair<List<SyncedRun>, Int> {
         var dupes = 0
         val keep = runs.filter { candidate ->
             val r = candidate.run
             val nearby = dao.runsStartingBetween(r.startEpochMs - DUP_WINDOW_MS, r.startEpochMs + DUP_WINDOW_MS)
-            val duplicate = nearby.any { other ->
-                other.id != r.id && other.sourceOrDefault != r.sourceOrDefault && sameDistance(other.distanceM, r.distanceM)
+            val (fromHealthConnect, rivals) = nearby
+                .filter { it.id != r.id && it.sourceOrDefault != r.sourceOrDefault }
+                .partition { it.sourceOrDefault == SOURCE_HEALTH_CONNECT }
+            val duplicate = rivals.any { other -> sameDistance(other.distanceM, r.distanceM) }
+            if (!duplicate && fromHealthConnect.isNotEmpty()) {
+                val ids = fromHealthConnect.map { it.id }
+                dao.deleteDetails(ids)
+                dao.deleteRuns(ids)
             }
             if (duplicate) dupes++
             !duplicate
         }
         return keep to dupes
+    }
+
+    /** Removes the Health Connect copies of [workouts] that now arrive from Samsung Health. */
+    private suspend fun replaceHealthConnectWorkouts(workouts: List<OtherWorkoutEntity>) {
+        if (workouts.isEmpty()) return
+        val copies = dao.healthConnectWorkouts()
+        if (copies.isEmpty()) return
+        val starts = workouts.map { it.startEpochMs }.sorted()
+        val ids = copies.filter { copy ->
+            val i = starts.binarySearch(copy.startEpochMs).let { if (it < 0) -it - 1 else it }
+            listOfNotNull(starts.getOrNull(i), starts.getOrNull(i - 1)).any { kotlin.math.abs(it - copy.startEpochMs) <= DUP_WINDOW_MS }
+        }.map { it.id }
+        ids.chunked(500).forEach { dao.deleteOtherWorkouts(it) }
     }
 
     private fun sameDistance(a: Float?, b: Float?): Boolean {
@@ -102,6 +176,7 @@ class RunRepository(
         dao.deleteAllRuns()
         dao.deleteAllOtherWorkouts()
         dao.deleteAllRecovery()
+        prefs?.edit()?.remove(HC_SYNCED_UNTIL)?.apply()
         return count
     }
 
@@ -186,6 +261,8 @@ class RunRepository(
         private const val OTHER_BACKFILLED = "otherWorkoutsBackfilled"
         private const val RECOVERY_FIRST_DAYS = 90L
         private const val RECOVERY_FULL_DAYS = 365L
+        private const val RECOVERY_RECENT_DAYS = 7L
+        private const val HC_SYNCED_UNTIL = "healthConnectSyncedUntil"
         const val DUP_WINDOW_MS = 2 * 60_000L
         val sampleListType = object : TypeToken<List<Sample>>() {}.type
         val routeListType = object : TypeToken<List<RoutePoint>>() {}.type

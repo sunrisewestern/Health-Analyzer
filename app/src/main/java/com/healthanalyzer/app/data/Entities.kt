@@ -41,7 +41,7 @@ data class RunEntity(
     val sourceDeviceId: String?,
     val updatedEpochMs: Long?,
     // ---- Added in schema v2 (all nullable so existing rows migrate cleanly) ----
-    /** Where the run came from: [SOURCE_SAMSUNG] (also when null, and for the Samsung export) or [SOURCE_GARMIN_FIT]. */
+    /** Where the run came from: [SOURCE_SAMSUNG] (also when null, and for the Samsung export), [SOURCE_GARMIN_FIT] or [SOURCE_HEALTH_CONNECT]. */
     val source: String? = null,
     /** Human-readable origin, e.g. "Garmin device 4315 · file 2026-11-01.fit". */
     val sourceDetail: String? = null,
@@ -74,6 +74,10 @@ data class RunEntity(
 
 const val SOURCE_SAMSUNG = "SAMSUNG"
 const val SOURCE_GARMIN_FIT = "GARMIN_FIT"
+const val SOURCE_HEALTH_CONNECT = "HEALTH_CONNECT"
+
+/** Ids of runs and other workouts read from Health Connect start with this. */
+const val HEALTH_CONNECT_ID_PREFIX = "hc:"
 
 /** Heavy per-run data kept apart from [RunEntity] so list queries stay cheap. JSON-encoded. */
 @Entity(tableName = "run_details")
@@ -148,9 +152,9 @@ data class DailyRecoveryEntity(
 /** A recorded session that is not a run: strength, hiking, cycling, walking and so on. */
 @Entity(tableName = "other_workouts")
 data class OtherWorkoutEntity(
-    /** Samsung data-point uid + "#" + session index. */
+    /** Samsung data-point uid + "#" + session index, or [HEALTH_CONNECT_ID_PREFIX] + the Health Connect record id. */
     @PrimaryKey val id: String,
-    /** Samsung's exercise type name, e.g. HIKING, BIKING, OTHER. */
+    /** Samsung's exercise type name, e.g. HIKING, BIKING, OTHER (Health Connect types are mapped to the same names). */
     val exerciseType: String,
     val title: String?,
     val startEpochMs: Long,

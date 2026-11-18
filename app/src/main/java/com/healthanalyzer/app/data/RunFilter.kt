@@ -26,6 +26,7 @@ enum class SourceFilter(val label: String, val source: String?) {
     ALL("All sources", null),
     SAMSUNG("Samsung", SOURCE_SAMSUNG),
     GARMIN("Garmin", SOURCE_GARMIN_FIT),
+    HEALTH_CONNECT("Health Connect", SOURCE_HEALTH_CONNECT),
 }
 
 enum class DistanceFilter(val label: String, val minKm: Double) {

@@ -39,6 +39,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
@@ -114,7 +115,7 @@ fun PlanScreen(vm: AiViewModel, onOpenSettings: () -> Unit) {
 
     // Writes the briefing when the day, today's workouts or the place change (cached otherwise).
     androidx.compose.runtime.LaunchedEffect(recapSettings, todaysPlan, providers.isNotEmpty(), state.generating) {
-        if (recapSettings.enabled && !state.generating) vm.refreshRecap()
+        if (recapSettings.autoGenerate && !state.generating) vm.refreshRecap()
     }
 
     fun select(date: LocalDate) {
@@ -147,17 +148,15 @@ fun PlanScreen(vm: AiViewModel, onOpenSettings: () -> Unit) {
             }
         }
 
-        if (recapSettings.enabled) {
-            TodayCard(
-                todaysPlan = todaysPlan,
-                runsToday = runsByDate[today].orEmpty(),
-                recap = recap,
-                running = recapRunning,
-                hasPlace = recapSettings.place != null,
-                onRefresh = { vm.refreshRecap(force = true) },
-                onOpenDay = { select(today) },
-            )
-        }
+        TodayCard(
+            todaysPlan = todaysPlan,
+            runsToday = runsByDate[today].orEmpty(),
+            recap = recap,
+            running = recapRunning,
+            hasPlace = recapSettings.place != null,
+            onRefresh = { vm.refreshRecap(force = true) },
+            onOpenDay = { select(today) },
+        )
 
         if (state.generating) {
             PlanCard {
@@ -364,7 +363,7 @@ fun PlanScreen(vm: AiViewModel, onOpenSettings: () -> Unit) {
 }
 
 @Composable
-private fun TodayCard(
+internal fun TodayCard(
     todaysPlan: List<PlanWorkoutEntity>,
     runsToday: List<RunEntity>,
     recap: com.healthanalyzer.app.ai.Recap,
@@ -377,7 +376,7 @@ private fun TodayCard(
     // A briefing from an earlier day is hidden until today's is written.
     val recap = if (recap.key.startsWith(LocalDate.now().toString())) recap else com.healthanalyzer.app.ai.Recap()
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().testTag("today_card"),
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(containerColor = scheme.primaryContainer.copy(alpha = 0.35f)),
         border = BorderStroke(1.dp, scheme.primary.copy(alpha = 0.35f)),
@@ -392,7 +391,17 @@ private fun TodayCard(
                         color = scheme.onSurfaceVariant,
                     )
                 }
-                if (!running) TextButton(onClick = onRefresh) { Text("Refresh") }
+                if (!running) {
+                    TextButton(onClick = onRefresh, modifier = Modifier.testTag("today_recap_button")) {
+                        Text(
+                            when {
+                                recap.text.isNotBlank() -> "Refresh"
+                                recap.error != null -> "Try again"
+                                else -> "Write briefing"
+                            },
+                        )
+                    }
+                }
             }
 
             // Facts first, so the card is useful before (or without) the AI text.

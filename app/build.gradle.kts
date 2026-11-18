@@ -16,6 +16,7 @@ android {
         targetSdk = 36
         versionCode = 7
         versionName = "1.5.0"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     // Release signing: the keystore and passwords live in ~/.gradle/gradle.properties
@@ -81,12 +82,20 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.ui:ui-tooling-preview")
     debugImplementation("androidx.compose.ui:ui-tooling")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
+    androidTestImplementation(platform("androidx.compose:compose-bom:2024.09.00"))
+    androidTestImplementation("androidx.compose.ui:ui-test-junit4")
+    androidTestImplementation("androidx.test:runner:1.7.0")
+    androidTestImplementation("androidx.test.ext:junit:1.3.0")
+    // Espresso before 3.7 calls InputManager.getInstance(), removed on recent Android versions.
+    androidTestImplementation("androidx.test.espresso:espresso-core:3.7.0")
 
     implementation("androidx.room:room-runtime:2.7.2")
     implementation("androidx.room:room-ktx:2.7.2")
     ksp("androidx.room:room-compiler:2.7.2")
 
     implementation("androidx.work:work-runtime-ktx:2.9.1") // scheduled automatic backups
+    implementation("androidx.health.connect:connect-client:1.1.0") // optional extra source: Health Connect
 
     testImplementation("junit:junit:4.13.2")
 

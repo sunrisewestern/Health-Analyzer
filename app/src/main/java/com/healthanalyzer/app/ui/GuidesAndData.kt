@@ -63,7 +63,7 @@ enum class SetupGuide(
             "Open Samsung Health, tap ⋮ (More options) on the Home screen, then Settings.",
             "Tap \"Download personal data\", then Download. Confirm with your Samsung account if asked.",
             "Wait for it to finish – a long history can take several minutes. The data is saved to phone storage, usually Download › Samsung Health › samsunghealth_<name>_<date> (the completion screen shows the exact place).",
-            "In HealthAnalyzer, tap Import on the Runs tab → \"Samsung Health export (folder)\" and pick that samsunghealth_… folder. Picking the \"Samsung Health\" folder above it also works – the newest export is used.",
+            "In Run Analyzer, tap Import on the Runs tab → \"Samsung Health export (folder)\" and pick that samsunghealth_… folder. Picking the \"Samsung Health\" folder above it also works – the newest export is used.",
             "Copied the export to a computer? Zip the samsunghealth_… folder and use \"Samsung Health export (.zip)\" instead.",
         ),
         note = "Android won't let apps open the whole Download folder, so pick the export folder itself. Re-importing is safe: runs already synced get enriched, not duplicated.",
@@ -76,7 +76,7 @@ enum class SetupGuide(
             "One run: sign in at connect.garmin.com in a browser, open Activities → All Activities, open the run, tap the ⚙ gear (top right) → Export Original. You get a .zip with the .fit inside – import the zip as it is.",
             "Whole history: on garmin.com open Account → Data Management → Export Your Data → Request Data Export. Garmin emails a download link when it's ready (can take hours or days). Import that big zip directly – nested zips are read automatically.",
             "From the watch: connect it to a computer by USB and copy the .fit files from the GARMIN › Activity folder to your phone.",
-            "In HealthAnalyzer, tap Import on the Runs tab → \"Garmin FIT files\" and pick one or more .fit or .zip files.",
+            "In Run Analyzer, tap Import on the Runs tab → \"Garmin FIT files\" and pick one or more .fit or .zip files.",
         ),
         note = "Only running activities are imported (road, treadmill, track, trail). A run also recorded by your Galaxy Watch is kept once.",
         link = "Open Garmin data export ↗" to "https://www.garmin.com/account/datamanagement/",
@@ -89,9 +89,9 @@ enum class SetupGuide(
             "Open Samsung Health, tap ⋮ (More options) → Settings → About Samsung Health.",
             "Tap the version number about 10 times quickly until a message says developer mode is on.",
             "Go back to Settings. A new \"Developer mode\" item appears near the bottom – open it and turn on \"Developer Mode for Data Read\".",
-            "Return to HealthAnalyzer, tap \"Grant Samsung Health\" on the Runs tab, allow access, then tap Sync Samsung.",
+            "Return to Run Analyzer, tap \"Grant Samsung Health\" on the Runs tab, allow access, then tap Sync Samsung.",
         ),
-        note = "HealthAnalyzer isn't a registered Samsung partner app, so without this, sync fails with error 2003. It only affects your phone and you can turn it off at any time.",
+        note = "Run Analyzer isn't a registered Samsung partner app, so without this, sync fails with error 2003. It only affects your phone and you can turn it off at any time.",
     ),
     GARMIN_PERSONAL_API(
         title = "Set up the Garmin Personal API",
@@ -101,7 +101,7 @@ enum class SetupGuide(
             "Sign in to Garmin Connect in a browser (the button below opens the right page; use the garmin.cn one for a China account).",
             "Create a Personal API key and pick how long it should last (30–365 days).",
             "Copy the key right away – Garmin shows it only once.",
-            "In HealthAnalyzer: Settings → Garmin Connect Integration, paste it into Personal API Key, tick \"Garmin China account\" if yours is on garmin.cn, then tap Connect Garmin.",
+            "In Run Analyzer: Settings → Garmin Connect Integration, paste it into Personal API Key, tick \"Garmin China account\" if yours is on garmin.cn, then tap Connect Garmin.",
             "Tap Sync Garmin on the Runs tab for new runs, or \"Sync All Garmin History\" in Settings for everything.",
         ),
         note = "The key is stored encrypted on this phone. Garmin emails you a week before it expires – create a new key and paste it again.",
@@ -309,7 +309,7 @@ fun DataManagementSection(runsVm: RunsViewModel, activity: android.app.Activity,
             title = { Text("Erase ${runs.size} runs?") },
             text = {
                 Text(
-                    "This removes every run, with its heart-rate samples and GPS route, from HealthAnalyzer. " +
+                    "This removes every run, with its heart-rate samples and GPS route, from Run Analyzer. " +
                         "It can't be undone here, but you can load them again with Sync or Import.\n\n" +
                         "Kept: AI providers, prompts, saved analyses, athlete profile and baseline, and your Garmin key.",
                 )

@@ -38,6 +38,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.healthanalyzer.app.backup.AutoBackupDestination
 import com.healthanalyzer.app.backup.BackupKind
+import com.healthanalyzer.app.backup.WebDavClient
 import com.healthanalyzer.app.backup.WebDavSettings
 import java.time.Instant
 import java.time.ZoneId
@@ -141,13 +142,14 @@ fun BackupSection(vm: BackupViewModel, onRestored: (BackupKind) -> Unit) {
             title = { Text("Backups on WebDAV") },
             text = {
                 LazyColumn(Modifier.heightIn(max = 420.dp)) {
-                    items(files, key = { it.name }) { f ->
+                    items(files, key = { "${it.legacy}/${it.name}" }) { f ->
                         Column(Modifier.fillMaxWidth().clickable { vm.pickRemote(f) }.padding(vertical = 8.dp)) {
                             Text(f.name, style = MaterialTheme.typography.bodyMedium)
                             Text(
                                 listOfNotNull(
                                     f.modifiedEpochMs?.let { Instant.ofEpochMilli(it).atZone(ZoneId.systemDefault()).format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")) },
                                     f.sizeBytes?.let { if (it > 1 shl 20) "%.1f MB".format(it / 1048576.0) else "%.0f KB".format(it / 1024.0) },
+                                    "old location, outside ${WebDavClient.APP_FOLDER}".takeIf { f.legacy },
                                 ).joinToString(" · "),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -183,8 +185,8 @@ internal fun WebDavForm(saved: WebDavSettings, busy: Boolean, onSave: (WebDavSet
         OutlinedTextField(
             url, { url = it },
             label = { Text("Folder URL") },
-            placeholder = { Text("https://dav.jianguoyun.com/dav/HealthAnalyzer/") },
-            supportingText = { Text("Nextcloud: https://<server>/remote.php/dav/files/<user>/HealthAnalyzer/") },
+            placeholder = { Text("https://dav.jianguoyun.com/dav/") },
+            supportingText = { Text("Backups go in a “${WebDavClient.APP_FOLDER}” folder here, created automatically. Nextcloud: https://<server>/remote.php/dav/files/<user>/") },
             keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Uri, autoCorrectEnabled = false),
             singleLine = true, shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth(),
         )
@@ -197,7 +199,7 @@ internal fun WebDavForm(saved: WebDavSettings, busy: Boolean, onSave: (WebDavSet
         )
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
-                if (saved.isSet) "Saved: ${saved.url}" else "Not set up yet",
+                if (saved.isSet) "Saved: ${WebDavClient.appFolderUrl(saved.url)}" else "Not set up yet",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.weight(1f),

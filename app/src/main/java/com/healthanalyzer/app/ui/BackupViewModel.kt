@@ -113,9 +113,9 @@ class BackupViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun listRemote() = run("Listing WebDAV backups…") {
-        val files = dav().list().filter { it.name.startsWith("HealthAnalyzer-") }
+        val files = dav().listWithLegacy().filter { it.name.startsWith("HealthAnalyzer-") }
         _state.update { it.copy(remote = files) }
-        if (files.isEmpty()) "No HealthAnalyzer backups in that WebDAV folder yet" else ""
+        if (files.isEmpty()) "No Run Analyzer backups in that WebDAV folder yet" else ""
     }
 
     fun closeRemote() = _state.update { it.copy(remote = null) }
@@ -124,7 +124,7 @@ class BackupViewModel(app: Application) : AndroidViewModel(app) {
         _state.update { it.copy(remote = null) }
         run("Downloading ${f.name}…") {
             val tmp = File.createTempFile("restore_in", ".bak", getApplication<Application>().cacheDir)
-            dav().download(f.name, tmp)
+            dav().download(f.name, tmp, legacy = f.legacy)
             stage(tmp, f.name)
             ""
         }

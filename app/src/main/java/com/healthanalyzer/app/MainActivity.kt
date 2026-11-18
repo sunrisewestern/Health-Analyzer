@@ -28,4 +28,10 @@ class MainActivity : ComponentActivity() {
         }
         runsViewModel.checkPermissions(this)
     }
+
+    override fun onResume() {
+        super.onResume()
+        // Health Connect access is granted and revoked outside the app.
+        runsViewModel.refreshHealthConnectState()
+    }
 }

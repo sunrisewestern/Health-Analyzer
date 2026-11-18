@@ -68,7 +68,7 @@ object BackupCrypto {
     fun decrypt(encrypted: File, out: File, password: CharArray) {
         DataInputStream(encrypted.inputStream().buffered()).use { input ->
             val head = ByteArray(MAGIC.size).also { input.readFully(it) }
-            if (!head.contentEquals(MAGIC)) throw IOException("Not an encrypted HealthAnalyzer backup")
+            if (!head.contentEquals(MAGIC)) throw IOException("Not an encrypted Run Analyzer backup")
             val salt = ByteArray(16).also { input.readFully(it) }
             val key = key(password, salt)
             out.outputStream().buffered().use { output ->

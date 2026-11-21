@@ -33,5 +33,7 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         // Health Connect access is granted and revoked outside the app.
         runsViewModel.refreshHealthConnectState()
+        // No source pushes new workouts to apps, so coming back to the app is a good moment to look.
+        runsViewModel.syncOnOpen()
     }
 }

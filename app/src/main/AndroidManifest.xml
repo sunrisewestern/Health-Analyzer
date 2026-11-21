@@ -25,6 +25,8 @@
     <uses-permission android:name="android.permission.health.READ_RESTING_HEART_RATE" />
     <!-- Without this Health Connect only returns the 30 days before access was first granted. -->
     <uses-permission android:name="android.permission.health.READ_HEALTH_DATA_HISTORY" />
+    <!-- Lets the scheduled automatic sync read Health Connect while the app is closed. -->
+    <uses-permission android:name="android.permission.health.READ_HEALTH_DATA_IN_BACKGROUND" />
 
     <queries>
         <package android:name="com.google.android.apps.healthdata" />

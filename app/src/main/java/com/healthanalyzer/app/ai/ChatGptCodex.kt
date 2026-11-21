@@ -238,10 +238,16 @@ internal class ChatGptCodexClient(private val http: OkHttpClient) : LlmClient {
                         addProperty("role", t.role)
                         add("content", JsonArray().apply {
                             // The Responses API types past assistant text as output_text.
-                            add(JsonObject().apply {
+                            if (t.text.isNotBlank() || t.media.isEmpty()) add(JsonObject().apply {
                                 addProperty("type", if (t.isUser) "input_text" else "output_text")
                                 addProperty("text", t.text)
                             })
+                            if (t.isUser) t.media.filter { it.isImage }.forEach { m ->
+                                add(JsonObject().apply {
+                                    addProperty("type", "input_image")
+                                    addProperty("image_url", m.dataUrl())
+                                })
+                            }
                         })
                     })
                 }

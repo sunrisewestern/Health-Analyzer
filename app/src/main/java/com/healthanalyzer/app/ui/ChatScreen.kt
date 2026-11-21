@@ -1,6 +1,9 @@
 package com.healthanalyzer.app.ui
 
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -27,6 +30,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
@@ -43,6 +47,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -209,6 +216,7 @@ private fun contextSummary(c: ChatEntity, baselineSaved: Boolean): String = list
     "Profile".takeIf { c.includeProfile },
     "Baseline".takeIf { c.includeBaseline && baselineSaved },
     "Training".takeIf { c.includeTraining },
+    "Plan".takeIf { c.includePlan },
     c.analysisIdList.size.takeIf { it > 0 }?.let { "$it analys${if (it == 1) "is" else "es"}" },
 ).joinToString(" · ")
 
@@ -226,6 +234,12 @@ private fun ChatConversation(vm: AiViewModel) {
     val live by vm.liveReply.collectAsStateWithLifecycle()
     val providers by vm.providers.collectAsStateWithLifecycle()
     val baseline by vm.baseline.collectAsStateWithLifecycle()
+    val pending by vm.pendingMedia.collectAsStateWithLifecycle()
+    val importing by vm.mediaImporting.collectAsStateWithLifecycle()
+    val mediaError by vm.mediaError.collectAsStateWithLifecycle()
+    val picker = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickMultipleVisualMedia(com.healthanalyzer.app.ai.ChatMedia.MAX_ATTACHMENTS),
+    ) { uris -> if (uris.isNotEmpty()) vm.addMedia(uris) }
     val c = chat ?: return
     val liveText = live?.takeIf { it.chatId == c.id }?.text
     val busy = live != null
@@ -346,7 +360,16 @@ private fun ChatConversation(vm: AiViewModel) {
 
         // Input
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.Bottom) {
+        PendingMediaRow(pending, importing, onRemove = vm::removePendingMedia)
+        mediaError?.let {
+            Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(start = 16.dp, top = 6.dp))
+        }
+        Row(Modifier.fillMaxWidth().padding(start = 4.dp, end = 12.dp, top = 8.dp, bottom = 8.dp), verticalAlignment = Alignment.Bottom) {
+            IconButton(
+                onClick = { picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)) },
+                enabled = !busy && pending.size + importing < com.healthanalyzer.app.ai.ChatMedia.MAX_ATTACHMENTS,
+                modifier = Modifier.size(48.dp).testTag("attachMedia").semantics { contentDescription = "Attach photo or video" },
+            ) { AppIcons.Photo(Modifier.size(24.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
             OutlinedTextField(
                 value = draft,
                 onValueChange = { draft = it },
@@ -361,7 +384,7 @@ private fun ChatConversation(vm: AiViewModel) {
             } else {
                 Button(
                     onClick = { vm.sendChat(draft); draft = "" },
-                    enabled = draft.isNotBlank() && provider != null,
+                    enabled = (draft.isNotBlank() || pending.isNotEmpty()) && importing == 0 && provider != null,
                     shape = RoundedCornerShape(14.dp),
                 ) { Text("Send") }
             }
@@ -374,8 +397,10 @@ private fun ChatConversation(vm: AiViewModel) {
 @Composable
 private fun MessageBubble(m: ChatMessageEntity, onRetry: () -> Unit, canRetry: Boolean) {
     if (m.role == com.healthanalyzer.app.ai.ChatTurn.USER) {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-            Surface(
+        val media = m.attachmentList
+        Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            if (media.isNotEmpty()) Box(Modifier.widthIn(max = 300.dp)) { MessageMedia(media) }
+            if (m.text.isNotBlank()) Surface(
                 shape = RoundedCornerShape(16.dp, 16.dp, 4.dp, 16.dp),
                 color = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.widthIn(max = 300.dp),
@@ -477,6 +502,7 @@ private fun ContextDialog(vm: AiViewModel, chat: ChatEntity, onDismiss: () -> Un
                     ) { c = c.copy(includeBaseline = it) }
                 }
                 item { ToggleRow("Recent training data", "12-month stats, 12 weekly totals, last 28 days of runs", c.includeTraining) { c = c.copy(includeTraining = it) } }
+                item { ToggleRow("Training plan", "Plan vs recorded (4 weeks) and the next 14 days, when a plan is saved", c.includePlan) { c = c.copy(includePlan = it) } }
                 item {
                     Text(
                         "Analysis history" + if (c.analysisIdList.isNotEmpty()) " (${c.analysisIdList.size} selected)" else "",

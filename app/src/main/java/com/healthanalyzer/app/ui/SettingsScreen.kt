@@ -1451,6 +1451,20 @@ private fun DataIntegrationsSubScreen(
             )
         }
 
+        item { SectionHeader("Automatic Sync") }
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
+            ) {
+                Column(Modifier.padding(14.dp)) {
+                    AutoSyncSettingsCard(runsVm)
+                }
+            }
+        }
+
         item { SectionHeader("Garmin Connect Integration") }
         item {
             Card(
@@ -2200,6 +2214,33 @@ private fun CodexSignInCard(vm: AiViewModel, form: ProviderForm) {
             if (credentials != null && form.id == 0L) {
                 Text("Tap Save below to keep this sign-in.", style = MaterialTheme.typography.bodySmall)
             }
+        }
+    }
+}
+
+@Composable
+private fun AutoSyncSettingsCard(runsVm: RunsViewModel) {
+    val state by runsVm.state.collectAsStateWithLifecycle()
+    val settings by runsVm.autoSyncSettings.collectAsStateWithLifecycle()
+    val status by runsVm.autoSyncStatus.collectAsStateWithLifecycle()
+    val permissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.health.connect.client.PermissionController.createRequestPermissionResultContract(),
+        runsVm::onHealthConnectPermissions,
+    )
+    AutoSyncSection(
+        settings = settings,
+        status = status,
+        syncing = state.autoSyncing,
+        onAllowHealthConnectBackground = if (state.healthConnectConnected && state.healthConnectNeedsBackgroundAccess) {
+            { permissionLauncher.launch(runsVm.healthConnect.permissionsToRequest()) }
+        } else null,
+        onChange = runsVm::setAutoSyncSettings,
+        onSyncNow = runsVm::syncAllNow,
+    )
+    state.message?.takeIf { it.startsWith("Auto sync") }?.let { msg ->
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(msg, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+            TextButton(onClick = runsVm::dismissMessage) { Text("OK") }
         }
     }
 }

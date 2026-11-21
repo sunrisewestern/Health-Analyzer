@@ -196,9 +196,13 @@ object TodayRecap {
     """.trimIndent()
 
     /** Changes whenever the briefing would need rewriting. */
-    fun key(today: LocalDate, workouts: List<PlanWorkoutEntity>, place: Place?): String =
-        listOf(today.toString(), place?.name.orEmpty(), workouts.joinToString(";") { "${it.id}:${it.title}:${it.distanceKm}:${it.target}" })
-            .joinToString("|")
+    /** Changes when the day, today's plan, the place or today's recorded workouts ([doneIds]) change. */
+    fun key(today: LocalDate, workouts: List<PlanWorkoutEntity>, place: Place?, doneIds: List<String> = emptyList()): String =
+        listOfNotNull(
+            today.toString(), place?.name.orEmpty(), workouts.joinToString(";") { "${it.id}:${it.title}:${it.distanceKm}:${it.target}" },
+            // Left out when nothing was recorded, so briefings cached before this part existed still match.
+            doneIds.sorted().joinToString(";").takeIf { it.isNotEmpty() },
+        ).joinToString("|")
 
     fun userPrompt(
         today: LocalDate,

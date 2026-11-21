@@ -3,6 +3,8 @@ package com.healthanalyzer.app.ai
 import com.anthropic.client.okhttp.AnthropicOkHttpClient
 import com.anthropic.core.JsonValue
 import com.anthropic.errors.AnthropicServiceException
+import com.anthropic.models.messages.Base64ImageSource
+import com.anthropic.models.messages.ContentBlockParam
 import com.anthropic.models.messages.MessageCreateParams
 import com.google.gson.JsonArray
 import com.google.gson.JsonElement
@@ -44,8 +46,8 @@ open class LlmException(message: String) : Exception(message)
 /** The server could not be reached at all (DNS, no route, connection refused). */
 class NetworkException(message: String) : LlmException(message)
 
-/** One message of a conversation. [role] is "user" or "assistant". */
-data class ChatTurn(val role: String, val text: String) {
+/** One message of a conversation. [role] is "user" or "assistant"; [media] only on user turns. */
+data class ChatTurn(val role: String, val text: String, val media: List<MediaPart> = emptyList()) {
     val isUser: Boolean get() = role == USER
     companion object {
         const val USER = "user"
@@ -177,7 +179,22 @@ private class OpenAiCompatibleClient(private val http: OkHttpClient) : LlmClient
     override fun chat(config: LlmConfig, system: String, turns: List<ChatTurn>): Flow<String> = flow {
         val messages = JsonArray().apply {
             if (system.isNotBlank()) add(JsonObject().apply { addProperty("role", "system"); addProperty("content", system) })
-            turns.forEach { t -> add(JsonObject().apply { addProperty("role", t.role); addProperty("content", t.text) }) }
+            turns.forEach { t ->
+                add(JsonObject().apply {
+                    addProperty("role", t.role)
+                    val images = t.media.filter { it.isImage }
+                    if (images.isEmpty()) addProperty("content", t.text)
+                    else add("content", JsonArray().apply {
+                        if (t.text.isNotBlank()) add(JsonObject().apply { addProperty("type", "text"); addProperty("text", t.text) })
+                        images.forEach { m ->
+                            add(JsonObject().apply {
+                                addProperty("type", "image_url")
+                                add("image_url", JsonObject().apply { addProperty("url", m.dataUrl()) })
+                            })
+                        }
+                    })
+                })
+            }
         }
         val body = JsonObject().apply {
             addProperty("model", config.model)
@@ -262,7 +279,17 @@ private class GeminiClient(private val http: OkHttpClient) : LlmClient {
                 turns.forEach { t ->
                     add(JsonObject().apply {
                         addProperty("role", if (t.isUser) "user" else "model")
-                        add("parts", textParts(t.text))
+                        add("parts", JsonArray().apply {
+                            if (t.text.isNotBlank() || t.media.isEmpty()) add(JsonObject().apply { addProperty("text", t.text) })
+                            t.media.forEach { m ->
+                                add(JsonObject().apply {
+                                    add("inlineData", JsonObject().apply {
+                                        addProperty("mimeType", m.mimeType)
+                                        addProperty("data", m.base64())
+                                    })
+                                })
+                            }
+                        })
                     })
                 }
             })
@@ -338,7 +365,22 @@ private object AnthropicClient : LlmClient {
             .model(config.model)
             .maxTokens(config.maxTokens.toLong())
             .apply { if (system.isNotBlank()) system(system) }
-            .apply { turns.forEach { t -> if (t.isUser) addUserMessage(t.text) else addAssistantMessage(t.text) } }
+            .apply {
+                turns.forEach { t ->
+                    val images = t.media.filter { it.isImage }
+                    when {
+                        !t.isUser -> addAssistantMessage(t.text)
+                        images.isEmpty() -> addUserMessage(t.text)
+                        else -> addUserMessageOfContentBlockParams(
+                            images.map { m ->
+                                ContentBlockParam.ofImage(
+                                    Base64ImageSource.builder().data(m.base64()).mediaType(Base64ImageSource.MediaType.of(m.mimeType)).build(),
+                                )
+                            } + listOfNotNull(t.text.takeIf { it.isNotBlank() }?.let { ContentBlockParam.ofText(it) }),
+                        )
+                    }
+                }
+            }
             .apply {
                 if (wantsFallback(config)) {
                     putAdditionalHeader("anthropic-beta", "server-side-fallback-2026-07-01")

@@ -63,11 +63,22 @@ class HealthConnectSource(context: Context) {
         if (isAvailable) client.permissionController.getGrantedPermissions() else emptySet()
 
     /** Everything to ask for. Only [READ_EXERCISE] is needed to sync; the rest adds detail. */
-    fun permissionsToRequest(): Set<String> {
-        val history = isAvailable && client.features.getFeatureStatus(HealthConnectFeatures.FEATURE_READ_HEALTH_DATA_HISTORY) ==
-            HealthConnectFeatures.FEATURE_STATUS_AVAILABLE
-        return if (history) PERMISSIONS + HealthPermission.PERMISSION_READ_HEALTH_DATA_HISTORY else PERMISSIONS
+    fun permissionsToRequest(): Set<String> = buildSet {
+        addAll(PERMISSIONS)
+        if (hasFeature(HealthConnectFeatures.FEATURE_READ_HEALTH_DATA_HISTORY)) add(HealthPermission.PERMISSION_READ_HEALTH_DATA_HISTORY)
+        if (supportsBackgroundRead) add(HealthPermission.PERMISSION_READ_HEALTH_DATA_IN_BACKGROUND)
     }
+
+    /** Whether this phone's Health Connect lets apps read while they are in the background. */
+    val supportsBackgroundRead: Boolean get() = hasFeature(HealthConnectFeatures.FEATURE_READ_HEALTH_DATA_IN_BACKGROUND)
+
+    /** Background reads (scheduled sync) need the extra grant; without it Health Connect refuses them. */
+    fun canReadInBackground(granted: Set<String>): Boolean =
+        supportsBackgroundRead && HealthPermission.PERMISSION_READ_HEALTH_DATA_IN_BACKGROUND in granted
+
+    private fun hasFeature(feature: Int): Boolean = isAvailable && runCatching {
+        client.features.getFeatureStatus(feature) == HealthConnectFeatures.FEATURE_STATUS_AVAILABLE
+    }.getOrDefault(false)
 
     /** Intent that installs or updates the Health Connect app (Android 13 and below). */
     fun installIntent(): Intent = Intent(Intent.ACTION_VIEW).apply {

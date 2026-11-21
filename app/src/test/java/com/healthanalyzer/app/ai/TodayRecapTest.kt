@@ -57,6 +57,18 @@ class TodayRecapTest {
     }
 
     @Test
+    fun keyChangesWhenARunIsRecordedToday() {
+        val day = LocalDate.of(2026, 11, 9)
+        val k = TodayRecap.key(day, emptyList(), null)
+        // Briefings cached before recorded runs were part of the key still match.
+        assertEquals(k, TodayRecap.key(day, emptyList(), null, emptyList()))
+        val withRun = TodayRecap.key(day, emptyList(), null, listOf("a"))
+        assertNotEquals(k, withRun)
+        assertEquals(TodayRecap.key(day, emptyList(), null, listOf("b", "a")), TodayRecap.key(day, emptyList(), null, listOf("a", "b")))
+        assertNotEquals(withRun, TodayRecap.key(day, emptyList(), null, listOf("a", "b")))
+    }
+
+    @Test
     fun promptCoversRestDayAndMissingWeather() {
         val p = TodayRecap.userPrompt(LocalDate.of(2026, 11, 9), emptyList(), "", 20.0, 3.73, null)
         assertTrue("Today is 2026-11-09 (Monday)." in p)

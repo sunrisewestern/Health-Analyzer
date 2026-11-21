@@ -252,7 +252,10 @@ class BackupManager(private val context: Context) {
         }
         aiDao.deleteAllChatMessages(); aiDao.deleteAllChats(); aiDao.deleteAllAnalyses()
         readLines(z, ANALYSES, 200, AnalysisEntity::class.java) { b, _ -> aiDao.upsertAnalyses(b) }
-        readLines(z, CHATS, 200, ChatEntity::class.java) { b, _ -> aiDao.upsertChats(b) }
+        // Chats saved before the plan option existed keep its default (on), not Gson's false.
+        readLines(z, CHATS, 200, com.google.gson.JsonObject::class.java) { b, _ ->
+            aiDao.upsertChats(b.map { o -> if (!o.has("includePlan")) o.addProperty("includePlan", true); gson.fromJson(o, ChatEntity::class.java) })
+        }
         readLines(z, MESSAGES, 500, ChatMessageEntity::class.java) { b, _ -> aiDao.upsertChatMessages(b) }
         // Older backups have no plan; the current one is then left as it is.
         if (z.getEntry(PLAN) != null) {

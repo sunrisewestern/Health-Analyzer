@@ -28,6 +28,7 @@ object ChatContext {
         baseline: Baseline?,
         analyses: List<AnalysisEntity>,
         extraSystem: String,
+        planSummary: String = "",
     ): String = buildString {
         append(renderer.render(BASE, null))
         append("\n\nToday is ").append(java.time.LocalDate.now()).append('.')
@@ -39,6 +40,9 @@ object ChatContext {
         }
         if (chat.includeTraining) {
             append("\n\n## Recent training data\n").append(renderer.render(TRAINING, null))
+        }
+        if (chat.includePlan) {
+            PlanContext.text(renderer, planSummary)?.let { append("\n\n## Training plan\n").append(it) }
         }
         if (analyses.isNotEmpty()) {
             append("\n\n## Earlier analyses the athlete shared for this chat")
@@ -58,13 +62,21 @@ object ChatContext {
     /**
      * Saved messages → turns for the API. Failed replies are left out, and back-to-back messages
      * from the same side are merged, since some APIs require user/assistant to alternate.
+     * Attached photos and videos are read from [mediaDir] (null leaves them out); [nativeVideo]
+     * sends kept video clips as video (Gemini) instead of still frames.
      */
-    fun turns(messages: List<ChatMessageEntity>): List<ChatTurn> {
+    fun turns(messages: List<ChatMessageEntity>, mediaDir: java.io.File? = null, nativeVideo: Boolean = false): List<ChatTurn> {
         val out = mutableListOf<ChatTurn>()
-        messages.filter { it.error == null && it.text.isNotBlank() }.forEach { m ->
+        messages.filter { it.error == null && (it.text.isNotBlank() || it.attachments != null) }.forEach { m ->
+            val atts = if (mediaDir != null && m.role == ChatTurn.USER) m.attachmentList else emptyList()
+            val media = if (mediaDir != null) ChatMedia.parts(mediaDir, atts, nativeVideo) else emptyList()
+            val text = listOfNotNull(mediaDir?.let { ChatMedia.note(it, atts, nativeVideo) }, m.text.takeIf { it.isNotBlank() })
+                .joinToString("\n")
+            if (text.isBlank() && media.isEmpty()) return@forEach
             val last = out.lastOrNull()
-            if (last != null && last.role == m.role) out[out.lastIndex] = last.copy(text = last.text + "\n\n" + m.text)
-            else out += ChatTurn(m.role, m.text)
+            if (last != null && last.role == m.role) {
+                out[out.lastIndex] = last.copy(text = listOf(last.text, text).filter { it.isNotBlank() }.joinToString("\n\n"), media = last.media + media)
+            } else out += ChatTurn(m.role, text, media)
         }
         while (out.firstOrNull()?.isUser == false) out.removeAt(0)
         return out

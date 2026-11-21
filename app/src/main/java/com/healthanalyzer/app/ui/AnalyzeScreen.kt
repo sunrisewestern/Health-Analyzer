@@ -41,6 +41,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -78,6 +79,8 @@ private fun AnalyzePane(vm: AiViewModel, onOpenSettings: () -> Unit) {
     val history by vm.analyses.collectAsStateWithLifecycle()
     val baseline by vm.baseline.collectAsStateWithLifecycle()
     val useBaseline by vm.useBaseline.collectAsStateWithLifecycle()
+    val usePlan by vm.usePlan.collectAsStateWithLifecycle()
+    val planWorkouts by vm.planWorkouts.collectAsStateWithLifecycle()
     var showPrompt by rememberSaveable { mutableStateOf(false) }
     var resultExpanded by rememberSaveable { mutableStateOf(true) }
     var analysisToDelete by remember { mutableStateOf<AnalysisEntity?>(null) }
@@ -252,6 +255,43 @@ private fun AnalyzePane(vm: AiViewModel, onOpenSettings: () -> Unit) {
                                 checked = useBaseline && baseline != null,
                                 onCheckedChange = vm::setUseBaseline,
                                 enabled = baseline != null && prompt?.savesBaseline != true && !includesBaseline,
+                                colors = SwitchDefaults.colors(
+                                    checkedThumbColor = MaterialTheme.colorScheme.primary,
+                                    checkedTrackColor = MaterialTheme.colorScheme.primaryContainer,
+                                ),
+                            )
+                        }
+                    }
+
+                    val planInPrompt = prompt?.let { com.healthanalyzer.app.ai.PlanContext.inTemplate(it.userTemplate, it.systemPrompt) } == true
+                    val hasPlan = planWorkouts.isNotEmpty()
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text("Use Training Plan", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+                                Text(
+                                    when {
+                                        !hasPlan -> "No plan yet – create one on the Plan tab"
+                                        prompt?.savesBaseline == true -> "Not used when building the baseline"
+                                        planInPrompt -> "Prompt already includes {{plan_review}}"
+                                        else -> "Plan vs recorded (4 weeks) and the next 14 days"
+                                    },
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            Switch(
+                                checked = usePlan && hasPlan,
+                                onCheckedChange = vm::setUsePlan,
+                                enabled = hasPlan && prompt?.savesBaseline != true && !planInPrompt,
+                                modifier = Modifier.testTag("use_plan_switch"),
                                 colors = SwitchDefaults.colors(
                                     checkedThumbColor = MaterialTheme.colorScheme.primary,
                                     checkedTrackColor = MaterialTheme.colorScheme.primaryContainer,

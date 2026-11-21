@@ -34,6 +34,10 @@ data class UiState(
     val healthConnectConnected: Boolean = false,
     /** How many of the permissions asked for are granted, e.g. "9 of 12". */
     val healthConnectAccess: String? = null,
+    /** Health Connect supports background reads but the app may not read in the background yet. */
+    val healthConnectNeedsBackgroundAccess: Boolean = false,
+    /** An automatic sync of all connected sources is running. */
+    val autoSyncing: Boolean = false,
 )
 
 class RunsViewModel(app: Application) : AndroidViewModel(app) {
@@ -72,7 +76,7 @@ class RunsViewModel(app: Application) : AndroidViewModel(app) {
             runCatching { source.requestRecoveryPermissions(activity) }
                 .onFailure { if (it is kotlinx.coroutines.CancellationException) throw it }
         }
-        val count = repository.sync(full)
+        val count = com.healthanalyzer.app.sync.AutoSyncRunner.exclusive { repository.sync(full) }
         _state.update { it.copy(message = "Synced $count run(s) from Samsung Health") }
     }
 
@@ -97,7 +101,7 @@ class RunsViewModel(app: Application) : AndroidViewModel(app) {
                 val parsed = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
                     com.healthanalyzer.app.data.FitImporter.parseFiles(files)
                 }
-                val (stored, dupes) = repository.importRuns(parsed.runs)
+                val (stored, dupes) = com.healthanalyzer.app.sync.AutoSyncRunner.exclusive { repository.importRuns(parsed.runs) }
                 val parts = buildList {
                     add("Imported $stored run(s) from ${parsed.filesRead} FIT file(s)")
                     if (dupes > 0) add("$dupes already synced from Samsung")
@@ -127,7 +131,7 @@ class RunsViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 var stored = 0
                 var dupes = 0
-                val result = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                val result = com.healthanalyzer.app.sync.AutoSyncRunner.exclusive { kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                     val files: com.healthanalyzer.app.data.SamsungExportFiles = if (isFolder) {
                         com.healthanalyzer.app.samsung.SafSamsungExport(app.contentResolver, uri)
                     } else {
@@ -150,7 +154,7 @@ class RunsViewModel(app: Application) : AndroidViewModel(app) {
                     } finally {
                         (files as? AutoCloseable)?.close()
                     }
-                }
+                } }
                 val parts = buildList {
                     add("Samsung export: $stored run(s) stored")
                     if (result.withDynamics > 0) add("${result.withDynamics} with running dynamics")
@@ -171,8 +175,9 @@ class RunsViewModel(app: Application) : AndroidViewModel(app) {
     fun eraseAllRuns() = viewModelScope.launch {
         _state.update { it.copy(busy = true) }
         try {
-            val n = repository.eraseAll()
-            garmin.resetSyncMarker()
+            val n = com.healthanalyzer.app.sync.AutoSyncRunner.exclusive {
+                repository.eraseAll().also { garmin.resetSyncMarker() }
+            }
             _state.update { it.copy(selected = null, message = "Erased $n run(s). Sync or import to load data again.") }
         } catch (e: Exception) {
             _state.update { it.copy(message = "Erase failed: ${e.message ?: e.javaClass.simpleName}") }
@@ -188,6 +193,52 @@ class RunsViewModel(app: Application) : AndroidViewModel(app) {
 
     init {
         refreshGarminState()
+    }
+
+    // ---- Automatic sync of every connected source ---------------------------------------------
+
+    private val autoSync = com.healthanalyzer.app.sync.AutoSyncRunner(container)
+
+    private val _autoSyncSettings = MutableStateFlow(com.healthanalyzer.app.sync.AutoSyncSettings.load(app))
+    val autoSyncSettings: StateFlow<com.healthanalyzer.app.sync.AutoSyncSettings> = _autoSyncSettings.asStateFlow()
+
+    val autoSyncStatus: StateFlow<com.healthanalyzer.app.sync.AutoSyncStatus> =
+        com.healthanalyzer.app.sync.AutoSyncRunner.status(app)
+
+    fun setAutoSyncSettings(s: com.healthanalyzer.app.sync.AutoSyncSettings) {
+        val intervalChanged = s.interval != _autoSyncSettings.value.interval
+        com.healthanalyzer.app.sync.AutoSyncSettings.save(getApplication(), s)
+        _autoSyncSettings.value = s
+        if (intervalChanged) com.healthanalyzer.app.sync.AutoSyncScheduler.sync(getApplication(), replace = true)
+    }
+
+    /** On every return to the app, if switched on; skipped when a sync finished in the last 15 minutes. */
+    fun syncOnOpen() {
+        // Imports and manual syncs hold the same lock, so this waits for them instead of overlapping.
+        if (!_autoSyncSettings.value.onOpen) return
+        runAutoSync(com.healthanalyzer.app.sync.AutoSyncRunner.OPEN_THROTTLE_MS)
+    }
+
+    /** "Sync now" in Settings: every connected source, right away. */
+    fun syncAllNow() = runAutoSync(0, always = true)
+
+    private fun runAutoSync(skipIfWithinMs: Long, always: Boolean = false) {
+        if (_state.value.autoSyncing) return
+        viewModelScope.launch {
+            _state.update { it.copy(autoSyncing = true) }
+            try {
+                val status = autoSync.run(background = false, skipIfWithinMs = skipIfWithinMs) ?: return@launch
+                if (always || status.newRuns > 0) {
+                    _state.update { it.copy(message = "Auto sync: ${status.newRuns} new run(s) · ${status.summary}") }
+                }
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                _state.update { it.copy(message = "Auto sync failed: ${e.message ?: e.javaClass.simpleName}") }
+            } finally {
+                _state.update { it.copy(autoSyncing = false) }
+                refreshGarminState()
+            }
+        }
     }
 
     fun refreshGarminState() = _state.update {
@@ -217,7 +268,9 @@ class RunsViewModel(app: Application) : AndroidViewModel(app) {
     fun syncGarmin(full: Boolean) = viewModelScope.launch {
         _state.update { it.copy(busy = true) }
         try {
-            val r = garmin.sync(repository, full) { p -> _state.update { it.copy(progress = p) } }
+            val r = com.healthanalyzer.app.sync.AutoSyncRunner.exclusive {
+                garmin.sync(repository, full) { p -> _state.update { it.copy(progress = p) } }
+            }
             val parts = buildList {
                 add("Garmin: ${r.stored} run(s) stored from ${r.downloaded} new activities")
                 if (r.duplicates > 0) add("${r.duplicates} already synced from Samsung")
@@ -248,6 +301,8 @@ class RunsViewModel(app: Application) : AndroidViewModel(app) {
                     healthConnectNeedsUpdate = healthConnect.needsUpdate,
                     healthConnectConnected = com.healthanalyzer.app.healthconnect.HealthConnectSource.READ_EXERCISE in granted,
                     healthConnectAccess = "${wanted.count { p -> p in granted }} of ${wanted.size}",
+                    healthConnectNeedsBackgroundAccess = available && healthConnect.supportsBackgroundRead &&
+                        !healthConnect.canReadInBackground(granted),
                 )
             }
         }.onFailure { if (it is kotlinx.coroutines.CancellationException) throw it }
@@ -265,7 +320,9 @@ class RunsViewModel(app: Application) : AndroidViewModel(app) {
     fun syncHealthConnect(full: Boolean) = viewModelScope.launch {
         _state.update { it.copy(busy = true) }
         try {
-            val r = repository.syncHealthConnect(healthConnect, full) { p -> _state.update { it.copy(progress = p) } }
+            val r = com.healthanalyzer.app.sync.AutoSyncRunner.exclusive {
+                repository.syncHealthConnect(healthConnect, full) { p -> _state.update { it.copy(progress = p) } }
+            }
             val parts = buildList {
                 add("Health Connect: ${r.runs} run(s) and ${r.workouts} other workout(s) stored")
                 if (r.duplicates > 0) add("${r.duplicates} already here from another source")

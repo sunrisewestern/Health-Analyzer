@@ -111,6 +111,8 @@ data class ChatEntity(
     val includeBaseline: Boolean = true,
     /** Running stats (12 months), weekly totals (12 weeks) and runs of the last 28 days. */
     val includeTraining: Boolean = false,
+    /** The saved training plan: plan vs recorded (4 weeks) and the next 14 days. */
+    val includePlan: Boolean = true,
     /** Saved analyses whose output is included, as comma-separated [AnalysisEntity] ids. */
     val analysisIds: String = "",
 ) {
@@ -129,7 +131,11 @@ data class ChatMessageEntity(
     val error: String? = null,
     /** "Provider · model" that wrote an assistant message. */
     val model: String? = null,
-)
+    /** JSON list of [ChatAttachment] on a user message (nullable: older backups lack it). */
+    val attachments: String? = null,
+) {
+    val attachmentList: List<ChatAttachment> get() = ChatMedia.decode(attachments)
+}
 
 @Dao
 interface AiDao {
@@ -246,7 +252,7 @@ interface AiDao {
         AiProviderEntity::class, PromptTemplateEntity::class, AnalysisEntity::class,
         ChatEntity::class, ChatMessageEntity::class, PlanWorkoutEntity::class,
     ],
-    version = 5,
+    version = 7,
     exportSchema = false,
 )
 abstract class AiDatabase : RoomDatabase() {
@@ -296,9 +302,23 @@ abstract class AiDatabase : RoomDatabase() {
             }
         }
 
+        /** v6: chats can include the training plan. */
+        private val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `chats` ADD COLUMN `includePlan` INTEGER NOT NULL DEFAULT 1")
+            }
+        }
+
+        /** v7: photos and videos on chat messages. */
+        private val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `chat_messages` ADD COLUMN `attachments` TEXT")
+            }
+        }
+
         fun create(context: Context): AiDatabase =
             Room.databaseBuilder(context, AiDatabase::class.java, "ai.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
                 .build()
     }
 }

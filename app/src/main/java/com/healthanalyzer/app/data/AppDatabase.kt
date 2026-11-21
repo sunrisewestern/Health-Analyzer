@@ -28,6 +28,9 @@ interface RunDao {
     @Query("SELECT * FROM runs ORDER BY startEpochMs DESC LIMIT 1")
     suspend fun latestRun(): RunEntity?
 
+    @Query("SELECT COUNT(*) FROM runs")
+    suspend fun runCount(): Int
+
     @Query("SELECT MAX(maxHeartRate) FROM runs")
     suspend fun highestHeartRate(): Float?
 
@@ -57,9 +60,6 @@ interface RunDao {
 
     @Query("DELETE FROM run_details WHERE runId IN (:ids)")
     suspend fun deleteDetails(ids: List<String>)
-
-    @Query("SELECT COUNT(*) FROM runs")
-    suspend fun runCount(): Int
 
     @Query("DELETE FROM runs")
     suspend fun deleteAllRuns()

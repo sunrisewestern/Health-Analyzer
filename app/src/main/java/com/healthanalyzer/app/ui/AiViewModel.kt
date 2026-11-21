@@ -114,6 +114,14 @@ class AiViewModel(app: Application) : AndroidViewModel(app) {
     private val _useBaseline = MutableStateFlow(Baseline.useInAnalyses(app))
     val useBaseline: StateFlow<Boolean> = _useBaseline.asStateFlow()
 
+    private val _usePlan = MutableStateFlow(com.healthanalyzer.app.ai.PlanContext.useInAnalyses(app))
+    val usePlan: StateFlow<Boolean> = _usePlan.asStateFlow()
+
+    fun setUsePlan(use: Boolean) {
+        com.healthanalyzer.app.ai.PlanContext.setUseInAnalyses(getApplication(), use)
+        _usePlan.value = use
+    }
+
     private val _importing = MutableStateFlow(false)
     val importing: StateFlow<Boolean> = _importing.asStateFlow()
 
@@ -233,6 +241,14 @@ class AiViewModel(app: Application) : AndroidViewModel(app) {
                 user = renderer.render(prompt.userTemplate, detail)
                 val savedBaseline = _baseline.value
                 val templateHasBaseline = "{{baseline}}" in prompt.userTemplate || "{{baseline}}" in prompt.systemPrompt
+                // The plan goes in front of the request, after the baseline (which is added in front of it).
+                if (_usePlan.value && !prompt.savesBaseline &&
+                    !com.healthanalyzer.app.ai.PlanContext.inTemplate(prompt.userTemplate, prompt.systemPrompt)
+                ) {
+                    com.healthanalyzer.app.ai.PlanContext.text(renderer, _planInfo.value.summary)?.let { plan ->
+                        user = "${com.healthanalyzer.app.ai.PlanContext.HEADER}:\n$plan\n\n$user"
+                    }
+                }
                 if (_useBaseline.value && savedBaseline != null && !templateHasBaseline && !prompt.savesBaseline) {
                     user = "${savedBaseline.header()}:\n${savedBaseline.text}\n\n$user"
                 }
@@ -310,6 +326,45 @@ class AiViewModel(app: Application) : AndroidViewModel(app) {
     val liveReply: StateFlow<LiveReply?> = _liveReply.asStateFlow()
     private var chatJob: Job? = null
 
+    /** Photos and videos picked for the next message, already copied into app storage. */
+    private val _pendingMedia = MutableStateFlow<List<com.healthanalyzer.app.ai.ChatAttachment>>(emptyList())
+    val pendingMedia: StateFlow<List<com.healthanalyzer.app.ai.ChatAttachment>> = _pendingMedia.asStateFlow()
+    private val _mediaImporting = MutableStateFlow(0)
+    val mediaImporting: StateFlow<Int> = _mediaImporting.asStateFlow()
+    private val _mediaError = MutableStateFlow<String?>(null)
+    val mediaError: StateFlow<String?> = _mediaError.asStateFlow()
+
+    fun addMedia(uris: List<android.net.Uri>) {
+        val room = com.healthanalyzer.app.ai.ChatMedia.MAX_ATTACHMENTS - _pendingMedia.value.size - _mediaImporting.value
+        _mediaError.value = if (uris.size > room) "Up to ${com.healthanalyzer.app.ai.ChatMedia.MAX_ATTACHMENTS} photos or videos per message." else null
+        uris.take(room.coerceAtLeast(0)).forEach { uri ->
+            _mediaImporting.update { it + 1 }
+            viewModelScope.launch {
+                try {
+                    val a = com.healthanalyzer.app.ai.ChatMedia.import(getApplication(), uri)
+                    _pendingMedia.update { it + a }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    _mediaError.value = e.message ?: "Couldn't attach that file."
+                } finally {
+                    _mediaImporting.update { it - 1 }
+                }
+            }
+        }
+    }
+
+    fun removePendingMedia(a: com.healthanalyzer.app.ai.ChatAttachment) {
+        _pendingMedia.update { it - a }
+        com.healthanalyzer.app.ai.ChatMedia.delete(getApplication(), listOf(a))
+    }
+
+    private fun discardPendingMedia() {
+        com.healthanalyzer.app.ai.ChatMedia.delete(getApplication(), _pendingMedia.value)
+        _pendingMedia.value = emptyList()
+        _mediaError.value = null
+    }
+
     /** Starts a conversation; [analysisId] pre-selects a saved analysis as context. */
     fun newChat(analysisId: Long? = null) = viewModelScope.launch {
         val now = System.currentTimeMillis()
@@ -324,18 +379,24 @@ class AiViewModel(app: Application) : AndroidViewModel(app) {
                 includeProfile = last?.includeProfile ?: true,
                 includeBaseline = last?.includeBaseline ?: true,
                 includeTraining = last?.includeTraining ?: false,
+                includePlan = last?.includePlan ?: true,
                 analysisIds = analysisId?.toString().orEmpty(),
             ),
         )
         _chatMode.value = true
         _analyze.update { it.copy(viewing = null) }
+        discardPendingMedia()
         _openChatId.value = id
     }
 
-    fun openChat(id: Long?) { _openChatId.value = id }
+    fun openChat(id: Long?) {
+        if (id != _openChatId.value) discardPendingMedia()
+        _openChatId.value = id
+    }
 
     fun deleteChat(id: Long) = viewModelScope.launch {
         if (_liveReply.value?.chatId == id) chatJob?.cancel()
+        com.healthanalyzer.app.ai.ChatMedia.delete(getApplication(), dao.messages(id).flatMap { it.attachmentList })
         dao.deleteMessages(id)
         dao.deleteChat(id)
         if (_openChatId.value == id) _openChatId.value = null
@@ -346,6 +407,8 @@ class AiViewModel(app: Application) : AndroidViewModel(app) {
         _liveReply.value = null
         dao.deleteAllChatMessages()
         dao.deleteAllChats()
+        _pendingMedia.value = emptyList()
+        com.healthanalyzer.app.ai.ChatMedia.deleteAll(getApplication())
         _openChatId.value = null
     }
 
@@ -354,11 +417,20 @@ class AiViewModel(app: Application) : AndroidViewModel(app) {
     fun sendChat(text: String) {
         val chat = openChat.value ?: return
         val question = text.trim()
-        if (question.isEmpty() || chatJob?.isActive == true) return
+        val media = _pendingMedia.value
+        if ((question.isEmpty() && media.isEmpty()) || _mediaImporting.value > 0 || chatJob?.isActive == true) return
+        _pendingMedia.value = emptyList()
+        _mediaError.value = null
         chatJob = viewModelScope.launch {
             val now = System.currentTimeMillis()
-            dao.upsertMessage(com.healthanalyzer.app.ai.ChatMessageEntity(chatId = chat.id, role = com.healthanalyzer.app.ai.ChatTurn.USER, text = question, createdEpochMs = now))
-            val title = if (chat.title == "New chat") question.lineSequence().first().take(48) else chat.title
+            dao.upsertMessage(
+                com.healthanalyzer.app.ai.ChatMessageEntity(
+                    chatId = chat.id, role = com.healthanalyzer.app.ai.ChatTurn.USER, text = question, createdEpochMs = now,
+                    attachments = com.healthanalyzer.app.ai.ChatMedia.encode(media),
+                ),
+            )
+            val fallbackTitle = if (media.any { it.isVideo }) "Video" else "Photo"
+            val title = if (chat.title == "New chat") question.lineSequence().first().take(48).ifBlank { fallbackTitle } else chat.title
             dao.upsertChat(chat.copy(title = title, updatedEpochMs = now))
             reply(chat.id)
         }
@@ -386,8 +458,14 @@ class AiViewModel(app: Application) : AndroidViewModel(app) {
         try {
             if (provider == null) throw IllegalStateException("Add an AI provider in Settings first.")
             val analyses = chat.analysisIdList.takeIf { it.isNotEmpty() }?.let { dao.analysesByIds(it) }.orEmpty()
-            val system = com.healthanalyzer.app.ai.ChatContext.system(chat, renderer, _baseline.value, analyses, provider.extraSystem)
-            val turns = com.healthanalyzer.app.ai.ChatContext.turns(dao.messages(chatId))
+            val system = com.healthanalyzer.app.ai.ChatContext.system(
+                chat, renderer, _baseline.value, analyses, provider.extraSystem, planSummary = _planInfo.value.summary,
+            )
+            val turns = com.healthanalyzer.app.ai.ChatContext.turns(
+                dao.messages(chatId),
+                mediaDir = com.healthanalyzer.app.ai.ChatMedia.dir(getApplication()),
+                nativeVideo = provider.protocol == com.healthanalyzer.app.ai.Protocol.GEMINI,
+            )
             LlmClients.forProtocol(provider.protocol).chat(provider.toConfig(), system, turns).collect { delta ->
                 output += delta
                 _liveReply.value = LiveReply(chatId, output)
@@ -603,6 +681,31 @@ class AiViewModel(app: Application) : AndroidViewModel(app) {
     private val _recapRunning = MutableStateFlow(false)
     val recapRunning: StateFlow<Boolean> = _recapRunning.asStateFlow()
 
+    /** Workouts are being synced before the briefing is written. */
+    private val _recapSyncing = MutableStateFlow(false)
+    val recapSyncing: StateFlow<Boolean> = _recapSyncing.asStateFlow()
+
+    private val autoSync by lazy { com.healthanalyzer.app.sync.AutoSyncRunner(container) }
+
+    /** Pulls new workouts so the briefing sees today's run. A failed sync never stops the briefing. */
+    private suspend fun syncForRecap(skipIfWithinMs: Long) {
+        _recapSyncing.value = true
+        try {
+            autoSync.run(background = false, skipIfWithinMs = skipIfWithinMs)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+        } finally {
+            _recapSyncing.value = false
+        }
+    }
+
+    private suspend fun recapKey(today: java.time.LocalDate, place: com.healthanalyzer.app.ai.Place?): String {
+        val zone = java.time.ZoneId.systemDefault()
+        val done = container.database.runDao().runsSince(today.atStartOfDay(zone).toInstant().toEpochMilli()).map { it.id }
+        return com.healthanalyzer.app.ai.TodayRecap.key(today, dao.planBetween(today.toString(), today.toString()), place, done)
+    }
+
     private val _placeSearching = MutableStateFlow(false)
     val placeSearching: StateFlow<Boolean> = _placeSearching.asStateFlow()
 
@@ -643,21 +746,32 @@ class AiViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * Writes today's briefing unless the cached one still fits (same day, today's workouts and
-     * place). A failed attempt is cached too, so opening the tab doesn't retry; [force] does.
-     * Without [force] it only runs when auto-generation is on.
+     * Writes today's briefing unless the cached one still fits (same day, today's plan, place and
+     * recorded workouts). A failed attempt is cached too, so opening the tab doesn't retry; [force]
+     * does. Without [force] it only runs when auto-generation is on.
+     *
+     * Every briefing is written right after a sync of all connected sources (one from the last
+     * two minutes is reused), so a run finished this morning is in it. Just checking whether the
+     * cache still fits reuses a sync from the last 15 minutes.
      */
     fun refreshRecap(force: Boolean = false) {
         val settings = _recapSettings.value
         if ((!force && !settings.autoGenerate) || recapJob?.isActive == true) return
         recapJob = viewModelScope.launch {
             val today = java.time.LocalDate.now()
+            _recapRunning.value = true
+            if (!force) {
+                syncForRecap(com.healthanalyzer.app.sync.AutoSyncRunner.OPEN_THROTTLE_MS)
+                if (_recap.value.key == recapKey(today, settings.place)) {
+                    _recapRunning.value = false
+                    return@launch
+                }
+            }
+            syncForRecap(com.healthanalyzer.app.sync.AutoSyncRunner.RECAP_FRESH_MS)
             val todays = dao.planBetween(today.toString(), today.toString())
-            val key = com.healthanalyzer.app.ai.TodayRecap.key(today, todays, settings.place)
-            if (!force && _recap.value.key == key) return@launch
+            val key = recapKey(today, settings.place)
             val provider = providers.value.firstOrNull { it.id == _analyze.value.providerId } ?: providers.value.firstOrNull()
                 ?: dao.allProviders().firstOrNull()
-            _recapRunning.value = true
             _recap.value = com.healthanalyzer.app.ai.Recap(key = key)
             var weatherLine = ""
             var weatherText: String? = null
@@ -719,6 +833,8 @@ class AiViewModel(app: Application) : AndroidViewModel(app) {
             com.healthanalyzer.app.ai.Recap.save(getApplication(), r)
             _recap.value = r
         }
+        // Also when stopped during the sync, before the briefing's own cleanup is reached.
+        recapJob?.invokeOnCompletion { _recapRunning.value = false; _recapSyncing.value = false }
     }
 
     // ---- Baseline ---------------------------------------------------------------------------
@@ -946,6 +1062,7 @@ class AiViewModel(app: Application) : AndroidViewModel(app) {
         _profileRevision.value++
         _baseline.value = Baseline.load(app)
         _useBaseline.value = Baseline.useInAnalyses(app)
+        _usePlan.value = com.healthanalyzer.app.ai.PlanContext.useInAnalyses(app)
         _themeConfig.value = ThemeConfig.load(app)
         _planInfo.value = com.healthanalyzer.app.ai.PlanInfo.load(app)
         _recapSettings.value = com.healthanalyzer.app.ai.RecapSettings.load(app)

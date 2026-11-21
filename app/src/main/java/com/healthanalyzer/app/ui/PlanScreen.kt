@@ -111,10 +111,11 @@ fun PlanScreen(vm: AiViewModel, onOpenSettings: () -> Unit) {
     val recapSettings by vm.recapSettings.collectAsStateWithLifecycle()
     val recap by vm.recap.collectAsStateWithLifecycle()
     val recapRunning by vm.recapRunning.collectAsStateWithLifecycle()
+    val recapSyncing by vm.recapSyncing.collectAsStateWithLifecycle()
     val todaysPlan = planByDate[today.toString()].orEmpty()
 
-    // Writes the briefing when the day, today's workouts or the place change (cached otherwise).
-    androidx.compose.runtime.LaunchedEffect(recapSettings, todaysPlan, providers.isNotEmpty(), state.generating) {
+    // Writes the briefing when the day, today's plan, today's recorded runs or the place change (cached otherwise).
+    androidx.compose.runtime.LaunchedEffect(recapSettings, todaysPlan, runsByDate[today].orEmpty().size, providers.isNotEmpty(), state.generating) {
         if (recapSettings.autoGenerate && !state.generating) vm.refreshRecap()
     }
 
@@ -153,6 +154,7 @@ fun PlanScreen(vm: AiViewModel, onOpenSettings: () -> Unit) {
             runsToday = runsByDate[today].orEmpty(),
             recap = recap,
             running = recapRunning,
+            syncing = recapSyncing,
             hasPlace = recapSettings.place != null,
             onRefresh = { vm.refreshRecap(force = true) },
             onOpenDay = { select(today) },
@@ -371,6 +373,8 @@ internal fun TodayCard(
     hasPlace: Boolean,
     onRefresh: () -> Unit,
     onOpenDay: () -> Unit,
+    /** Workouts are being synced first, so today's run is in the briefing. */
+    syncing: Boolean = false,
 ) {
     val scheme = MaterialTheme.colorScheme
     // A briefing from an earlier day is hidden until today's is written.
@@ -433,7 +437,15 @@ internal fun TodayCard(
                 )
             }
 
-            if (running && recap.text.isBlank()) {
+            if (syncing) {
+                LinearProgressIndicator(Modifier.fillMaxWidth())
+                Text(
+                    "Syncing your workouts first…",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = scheme.onSurfaceVariant,
+                    modifier = Modifier.testTag("today_recap_syncing"),
+                )
+            } else if (running && recap.text.isBlank()) {
                 LinearProgressIndicator(Modifier.fillMaxWidth())
                 Text(if (hasPlace) "Your coach is checking today's plan and weather…" else "Your coach is checking today's plan…",style = MaterialTheme.typography.bodySmall, color = scheme.onSurfaceVariant)
             }

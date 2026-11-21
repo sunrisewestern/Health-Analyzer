@@ -22,6 +22,36 @@ import androidx.compose.ui.unit.dp
  */
 object AppIcons {
 
+    /** Picture frame with a mountain and sun: attach a photo or video. */
+    @Composable
+    fun Photo(
+        modifier: Modifier = Modifier.size(24.dp),
+        tint: Color = LocalContentColor.current,
+        strokeWidth: Dp = 2.dp,
+    ) {
+        Canvas(modifier = modifier) {
+            val sw = strokeWidth.toPx()
+            val w = size.width
+            val h = size.height
+            drawRoundRect(
+                color = tint,
+                topLeft = Offset(w * 0.12f, h * 0.18f),
+                size = Size(w * 0.76f, h * 0.64f),
+                cornerRadius = CornerRadius(w * 0.12f),
+                style = Stroke(width = sw),
+            )
+            drawCircle(tint, w * 0.07f, Offset(w * 0.64f, h * 0.38f), style = Stroke(width = sw))
+            val p = Path().apply {
+                moveTo(w * 0.16f, h * 0.74f)
+                lineTo(w * 0.38f, h * 0.50f)
+                lineTo(w * 0.56f, h * 0.68f)
+                lineTo(w * 0.66f, h * 0.58f)
+                lineTo(w * 0.84f, h * 0.76f)
+            }
+            drawPath(p, tint, style = Stroke(width = sw, cap = StrokeCap.Round, join = StrokeJoin.Round))
+        }
+    }
+
     @Composable
     fun Calendar(
         modifier: Modifier = Modifier.size(24.dp),

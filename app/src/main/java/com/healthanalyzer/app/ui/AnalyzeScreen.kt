@@ -73,7 +73,10 @@ fun AnalyzeScreen(vm: AiViewModel, onOpenSettings: () -> Unit) {
 @Composable
 private fun AnalyzePane(vm: AiViewModel, onOpenSettings: () -> Unit) {
     val state by vm.analyze.collectAsStateWithLifecycle()
-    val providers by vm.providers.collectAsStateWithLifecycle()
+    val rawProviders by vm.providers.collectAsStateWithLifecycle()
+    val taskModels by vm.taskModels.collectAsStateWithLifecycle()
+    // Shown with the Analysis task's model and thinking level, which is what a run sends.
+    val providers = rawProviders.map { taskModels.live(rawProviders).apply(com.healthanalyzer.app.ai.AiTask.ANALYSIS, it) }
     val prompts by vm.prompts.collectAsStateWithLifecycle()
     val runs by vm.runs.collectAsStateWithLifecycle()
     val history by vm.analyses.collectAsStateWithLifecycle()
@@ -107,7 +110,8 @@ private fun AnalyzePane(vm: AiViewModel, onOpenSettings: () -> Unit) {
         return
     }
 
-    val provider = providers.firstOrNull { it.id == state.providerId } ?: providers.firstOrNull()
+    // Same choice start() makes, so the picker shows the provider that will be used.
+    val provider = taskModels.providerFor(com.healthanalyzer.app.ai.AiTask.ANALYSIS, rawProviders, state.providerId)
     val prompt = prompts.firstOrNull { it.id == state.promptId } ?: prompts.firstOrNull()
     val usesRun = prompt?.let { "{{run}}" in it.userTemplate || "{{run}}" in it.systemPrompt } == true
     val run = runs.firstOrNull { it.id == state.runId }

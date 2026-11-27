@@ -84,8 +84,25 @@ class AiViewModel(app: Application) : AndroidViewModel(app) {
     val runs: StateFlow<List<RunEntity>> =
         repository.observeRuns().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
-    private val _analyze = MutableStateFlow(AnalyzeState())
+    private val _taskModels = MutableStateFlow(com.healthanalyzer.app.ai.TaskModels.load(app))
+    /** Per-task provider, model and thinking level (Settings → AI → Providers → Models per task). */
+    val taskModels: StateFlow<com.healthanalyzer.app.ai.TaskModels> = _taskModels.asStateFlow()
+
+    private val _analyze = MutableStateFlow(AnalyzeState(providerId = _taskModels.value[com.healthanalyzer.app.ai.AiTask.ANALYSIS].providerId))
     val analyze: StateFlow<AnalyzeState> = _analyze.asStateFlow()
+
+    fun setTaskModel(task: com.healthanalyzer.app.ai.AiTask, value: com.healthanalyzer.app.ai.TaskModel) {
+        val before = _taskModels.value[task]
+        val next = _taskModels.value.with(task, value)
+        _taskModels.value = next
+        com.healthanalyzer.app.ai.TaskModels.save(getApplication(), next)
+        // The Analyze tab's picker follows the task's provider; back to Default lets it fall back again.
+        if (task == com.healthanalyzer.app.ai.AiTask.ANALYSIS && value.providerId != before.providerId) select(providerId = value.providerId)
+    }
+
+    /** The provider [task] runs on, with the task's model and thinking level applied. */
+    private fun providerFor(task: com.healthanalyzer.app.ai.AiTask, chosenId: Long?, list: List<AiProviderEntity> = providers.value) =
+        _taskModels.value.providerFor(task, list, chosenId)
 
     private val _profile = MutableStateFlow(AthleteProfile.load(app))
     val profile: StateFlow<AthleteProfile> = _profile.asStateFlow()
@@ -211,7 +228,7 @@ class AiViewModel(app: Application) : AndroidViewModel(app) {
 
     fun start() {
         val s = _analyze.value
-        val provider = providers.value.firstOrNull { it.id == s.providerId } ?: providers.value.firstOrNull()
+        val provider = providerFor(com.healthanalyzer.app.ai.AiTask.ANALYSIS, s.providerId)
         val prompt = prompts.value.firstOrNull { it.id == s.promptId } ?: prompts.value.firstOrNull()
         if (provider == null) return _analyze.update { it.copy(error = "Add an AI provider in Settings first.") }
         if (prompt == null) return _analyze.update { it.copy(error = "Add a prompt in Settings first.") }
@@ -374,7 +391,8 @@ class AiViewModel(app: Application) : AndroidViewModel(app) {
                 title = "New chat",
                 createdEpochMs = now,
                 updatedEpochMs = now,
-                providerId = last?.providerId ?: _analyze.value.providerId,
+                providerId = _taskModels.value.liveProviderId(com.healthanalyzer.app.ai.AiTask.CHAT, providers.value)
+                    ?: last?.providerId ?: _analyze.value.providerId,
                 // Carry over the last chat's context choices; a fresh install defaults to profile + baseline.
                 includeProfile = last?.includeProfile ?: true,
                 includeBaseline = last?.includeBaseline ?: true,
@@ -449,7 +467,7 @@ class AiViewModel(app: Application) : AndroidViewModel(app) {
 
     private suspend fun reply(chatId: Long) {
         val chat = dao.getChat(chatId) ?: return
-        val provider = providers.value.firstOrNull { it.id == chat.providerId } ?: providers.value.firstOrNull()
+        val provider = providerFor(com.healthanalyzer.app.ai.AiTask.CHAT, chat.providerId)
         val modelLabel = provider?.let { "${it.name} · ${it.model}" }
         var output = ""
         var error: String? = null
@@ -516,7 +534,7 @@ class AiViewModel(app: Application) : AndroidViewModel(app) {
      * plan has parsed; earlier days are kept.
      */
     fun generatePlan(providerId: Long?, goal: String, weeks: Int, runsPerWeek: Int, fromToday: Boolean = false) {
-        val provider = providers.value.firstOrNull { it.id == providerId } ?: providers.value.firstOrNull()
+        val provider = providerFor(com.healthanalyzer.app.ai.AiTask.PLAN, providerId)
         if (provider == null) {
             _plan.value = PlanState(error = "Add an AI provider in Settings first.")
             return
@@ -588,7 +606,7 @@ class AiViewModel(app: Application) : AndroidViewModel(app) {
     fun revisePlan(providerId: Long?, request: String) {
         val text = request.trim()
         if (text.isEmpty() || _revision.value.running) return
-        val provider = providers.value.firstOrNull { it.id == providerId } ?: providers.value.firstOrNull()
+        val provider = providerFor(com.healthanalyzer.app.ai.AiTask.PLAN, providerId)
         if (provider == null) {
             _revision.update { it.copy(error = "Add an AI provider in Settings first.") }
             return
@@ -770,8 +788,12 @@ class AiViewModel(app: Application) : AndroidViewModel(app) {
             syncForRecap(com.healthanalyzer.app.sync.AutoSyncRunner.RECAP_FRESH_MS)
             val todays = dao.planBetween(today.toString(), today.toString())
             val key = recapKey(today, settings.place)
-            val provider = providers.value.firstOrNull { it.id == _analyze.value.providerId } ?: providers.value.firstOrNull()
-                ?: dao.allProviders().firstOrNull()
+            val all = providers.value.ifEmpty { dao.allProviders() }
+            val provider = providerFor(
+                com.healthanalyzer.app.ai.AiTask.BRIEFING,
+                _taskModels.value.liveProviderId(com.healthanalyzer.app.ai.AiTask.BRIEFING, all) ?: _analyze.value.providerId,
+                all,
+            )
             _recap.value = com.healthanalyzer.app.ai.Recap(key = key)
             var weatherLine = ""
             var weatherText: String? = null
@@ -853,7 +875,7 @@ class AiViewModel(app: Application) : AndroidViewModel(app) {
 
     fun saveCurrentOutputAsBaseline() {
         val s = _analyze.value
-        val provider = providers.value.firstOrNull { it.id == s.providerId }
+        val provider = providerFor(com.healthanalyzer.app.ai.AiTask.ANALYSIS, s.providerId)
         saveBaseline(s.output, provider?.let { "${it.name} · ${it.model}" }.orEmpty())
         _settingsMessage.value = "Saved as your athlete baseline"
     }
@@ -986,6 +1008,26 @@ class AiViewModel(app: Application) : AndroidViewModel(app) {
 
     fun clearModels() { _models.value = emptyList() }
 
+    private val _providerModels = MutableStateFlow<Map<Long, ProviderModels>>(emptyMap())
+    /** Model IDs listed for saved providers (Models per task), by provider id; kept for the session. */
+    val providerModels: StateFlow<Map<Long, ProviderModels>> = _providerModels.asStateFlow()
+
+    /** Lists the models of a saved provider, using its stored key. */
+    fun fetchProviderModels(providerId: Long) {
+        val p = providers.value.firstOrNull { it.id == providerId } ?: return
+        if (_providerModels.value[providerId]?.loading == true) return
+        _providerModels.update { it + (providerId to ProviderModels(loading = true, models = it[providerId]?.models.orEmpty())) }
+        viewModelScope.launch {
+            val result = try {
+                val list = LlmClients.forProtocol(p.protocol).listModels(p.toConfig())
+                ProviderModels(models = list, error = if (list.isEmpty()) "No models listed by ${p.name}." else null)
+            } catch (e: Exception) {
+                ProviderModels(error = "Couldn't list models: ${e.message ?: e.javaClass.simpleName}")
+            }
+            _providerModels.update { it + (providerId to result) }
+        }
+    }
+
     private val _test = MutableStateFlow<ProviderTestState>(ProviderTestState.Idle)
     val test: StateFlow<ProviderTestState> = _test.asStateFlow()
     private var testJob: Job? = null
@@ -1066,6 +1108,8 @@ class AiViewModel(app: Application) : AndroidViewModel(app) {
         _themeConfig.value = ThemeConfig.load(app)
         _planInfo.value = com.healthanalyzer.app.ai.PlanInfo.load(app)
         _recapSettings.value = com.healthanalyzer.app.ai.RecapSettings.load(app)
+        _taskModels.value = com.healthanalyzer.app.ai.TaskModels.load(app)
+        _taskModels.value[com.healthanalyzer.app.ai.AiTask.ANALYSIS].providerId?.let { id -> select(providerId = id) }
         _recap.value = com.healthanalyzer.app.ai.Recap.load(app)
     }
 

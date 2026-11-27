@@ -112,7 +112,7 @@ data class PlanInfo(
     }
 }
 
-const val DEFAULT_WEEKS = 1
+const val DEFAULT_WEEKS = 4
 
 /** Settings for the "Today" card on the Plan tab, kept in the "ai_settings" preferences. */
 data class RecapSettings(

@@ -934,6 +934,22 @@ private fun AiConfigSubScreen(
                         }
                     }
                 }
+                if (providers.isNotEmpty()) {
+                    item(key = "task_models") {
+                        val taskModels by vm.taskModels.collectAsStateWithLifecycle()
+                        val providerModels by vm.providerModels.collectAsStateWithLifecycle()
+                        Card(
+                            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                            shape = RoundedCornerShape(14.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
+                        ) {
+                            Column(Modifier.padding(14.dp)) {
+                                TaskModelsSection(providers, taskModels, vm::setTaskModel, providerModels, vm::fetchProviderModels)
+                            }
+                        }
+                    }
+                }
             }
             1 -> {
                 // Prompts Sub-layer

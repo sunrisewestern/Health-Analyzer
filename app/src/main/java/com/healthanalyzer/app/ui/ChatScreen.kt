@@ -232,7 +232,9 @@ private fun ChatConversation(vm: AiViewModel) {
     val chat by vm.openChat.collectAsStateWithLifecycle()
     val messages by vm.chatMessages.collectAsStateWithLifecycle()
     val live by vm.liveReply.collectAsStateWithLifecycle()
-    val providers by vm.providers.collectAsStateWithLifecycle()
+    val rawProviders by vm.providers.collectAsStateWithLifecycle()
+    val taskModels by vm.taskModels.collectAsStateWithLifecycle()
+    val providers = rawProviders.map { taskModels.live(rawProviders).apply(com.healthanalyzer.app.ai.AiTask.CHAT, it) }
     val baseline by vm.baseline.collectAsStateWithLifecycle()
     val pending by vm.pendingMedia.collectAsStateWithLifecycle()
     val importing by vm.mediaImporting.collectAsStateWithLifecycle()
@@ -247,7 +249,7 @@ private fun ChatConversation(vm: AiViewModel) {
     var showContext by remember { mutableStateOf(false) }
     var confirmDeleteChat by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
-    val provider = providers.firstOrNull { it.id == c.providerId } ?: providers.firstOrNull()
+    val provider = taskModels.providerFor(com.healthanalyzer.app.ai.AiTask.CHAT, rawProviders, c.providerId)
 
     // Keep the newest text in view while a reply streams in.
     val itemCount = messages.size + (if (liveText != null) 1 else 0)
@@ -461,7 +463,9 @@ private fun AssistantBubble(text: String, footer: String?, isError: Boolean) {
 /** Chooses the provider and what context is sent with every message of this chat. */
 @Composable
 private fun ContextDialog(vm: AiViewModel, chat: ChatEntity, onDismiss: () -> Unit) {
-    val providers by vm.providers.collectAsStateWithLifecycle()
+    val rawProviders by vm.providers.collectAsStateWithLifecycle()
+    val taskModels by vm.taskModels.collectAsStateWithLifecycle()
+    val providers = rawProviders.map { taskModels.live(rawProviders).apply(com.healthanalyzer.app.ai.AiTask.CHAT, it) }
     val baseline by vm.baseline.collectAsStateWithLifecycle()
     val history by vm.analyses.collectAsStateWithLifecycle()
     var c by remember(chat.id) { mutableStateOf(chat) }
@@ -475,7 +479,7 @@ private fun ContextDialog(vm: AiViewModel, chat: ChatEntity, onDismiss: () -> Un
                 item {
                     Picker(
                         label = "AI provider",
-                        selected = providers.firstOrNull { it.id == c.providerId } ?: providers.firstOrNull(),
+                        selected = taskModels.providerFor(com.healthanalyzer.app.ai.AiTask.CHAT, rawProviders, c.providerId),
                         options = providers,
                         display = {
                             val thinking = if (it.thinkingLevel != com.healthanalyzer.app.ai.ThinkingLevel.DEFAULT) " · ${it.thinkingLevel.label}" else ""

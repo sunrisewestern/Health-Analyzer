@@ -92,7 +92,10 @@ fun PlanScreen(vm: AiViewModel, onOpenSettings: () -> Unit) {
     val runs by vm.runs.collectAsStateWithLifecycle()
     val state by vm.plan.collectAsStateWithLifecycle()
     val info by vm.planInfo.collectAsStateWithLifecycle()
-    val providers by vm.providers.collectAsStateWithLifecycle()
+    val rawProviders by vm.providers.collectAsStateWithLifecycle()
+    val taskModels by vm.taskModels.collectAsStateWithLifecycle()
+    // Shown with the Training plan task's model and thinking level, which is what a request sends.
+    val providers = rawProviders.map { taskModels.live(rawProviders).apply(com.healthanalyzer.app.ai.AiTask.PLAN, it) }
 
     val today = remember { LocalDate.now() }
     var monthText by rememberSaveable { mutableStateOf(YearMonth.from(today).toString()) }
@@ -332,7 +335,7 @@ fun PlanScreen(vm: AiViewModel, onOpenSettings: () -> Unit) {
         GeneratePlanDialog(
             info = info,
             providers = providers,
-            defaultProviderId = vm.analyze.collectAsStateWithLifecycle().value.providerId,
+            defaultProviderId = taskModels.liveProviderId(com.healthanalyzer.app.ai.AiTask.PLAN, rawProviders) ?: vm.analyze.collectAsStateWithLifecycle().value.providerId,
             replacesPlan = hasUpcoming,
             onDismiss = { showGenerate = false },
             onOpenSettings = { showGenerate = false; onOpenSettings() },
@@ -346,7 +349,7 @@ fun PlanScreen(vm: AiViewModel, onOpenSettings: () -> Unit) {
         RevisePlanDialog(
             state = revision,
             providers = providers,
-            defaultProviderId = vm.analyze.collectAsStateWithLifecycle().value.providerId,
+            defaultProviderId = taskModels.liveProviderId(com.healthanalyzer.app.ai.AiTask.PLAN, rawProviders) ?: vm.analyze.collectAsStateWithLifecycle().value.providerId,
             onSend = vm::revisePlan,
             onUndo = { vm.undoRevision() },
             onStop = vm::stopPlan,
@@ -635,7 +638,7 @@ private fun GeneratePlanDialog(
                         label = "AI model",
                         selected = provider,
                         options = providers,
-                        display = { "${it.name} (${it.model.ifBlank { it.protocol.label }})" },
+                        display = { providerLabel(it) },
                         onSelect = { providerId = it.id },
                     )
                     val (start, end) = TrainingPlan.period(today, weeks, fromToday)
@@ -738,7 +741,7 @@ private fun RevisePlanDialog(
                             label = "AI model",
                             selected = provider,
                             options = providers,
-                            display = { "${it.name} (${it.model.ifBlank { it.protocol.label }})" },
+                            display = { providerLabel(it) },
                             onSelect = { providerId = it.id },
                         )
                     }
@@ -751,4 +754,9 @@ private fun RevisePlanDialog(
         },
         dismissButton = { if (!state.running) TextButton(onClick = onDismiss) { Text("Done") } },
     )
+}
+
+private fun providerLabel(p: AiProviderEntity): String {
+    val thinking = if (p.thinkingLevel != com.healthanalyzer.app.ai.ThinkingLevel.DEFAULT) " · ${p.thinkingLevel.label}" else ""
+    return "${p.name} (${p.model.ifBlank { p.protocol.label }}$thinking)"
 }

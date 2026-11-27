@@ -15,7 +15,7 @@ android {
         minSdk = 29 // Samsung Health Data SDK requires Android 10+
         targetSdk = 36
         versionCode = 8
-        versionName = "1.5.1"
+        versionName = "1.6.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
